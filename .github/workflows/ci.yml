@@ -1,0 +1,67 @@
+name: TableFlow CI
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      TABLEFLOW_TEST_MYSQL: 'true'
+      TABLEFLOW_MYSQL_PASSWORD: tableflow-ci-local-only
+      TABLEFLOW_MYSQL_ROOT_PASSWORD: tableflow-ci-root-local-only
+      TABLEFLOW_LOAD_ENABLED: 'true'
+      TABLEFLOW_LOAD_URL: jdbc:mysql://localhost:3307/tableflow
+      TABLEFLOW_LOAD_USER: tableflow
+      TABLEFLOW_LOAD_PASSWORD: tableflow-ci-local-only
+      TABLEFLOW_LOAD_TABLES: TB_EMPLOYEE
+      TABLEFLOW_LOAD_SSL_MODE: REQUIRED
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: ai-service/requirements.txt
+      - name: Install and prepare local OCR
+        working-directory: ai-service
+        run: |
+          python -m pip install -r requirements.txt
+          python prepare_models.py
+      - name: Python mock, boundary and real OCR tests
+        working-directory: ai-service
+        env:
+          TABLEFLOW_TEST_LOCAL_OCR: 'true'
+        run: python -m pytest -q
+      - name: Start isolated MySQL
+        run: docker compose up -d --wait --wait-timeout 180
+      - name: Backend tests and executable jar
+        working-directory: backend
+        run: bash gradlew test bootJar
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci
+      - name: Production frontend build
+        working-directory: frontend
+        run: npm run build
+      - name: Install test browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Browser workflow tests
+        working-directory: frontend
+        env:
+          TABLEFLOW_TEST_LOCAL_OCR: 'true'
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: verification-reports
+          path: |
+            backend/build/reports/tests/
+            frontend/test-results/

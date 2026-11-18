@@ -1,0 +1,56 @@
+package dev.tableflow.api;
+
+import dev.tableflow.model.Table;
+import dev.tableflow.model.Table.*;
+import dev.tableflow.parser.DocumentParser;
+import dev.tableflow.transform.TableEngine;
+import dev.tableflow.export.TableExporter;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.*;
+import org.springframework.http.*;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+import java.io.IOException;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/v1")
+public class TableController {
+    private final DocumentParser parser;
+    private final TableEngine engine;
+    private final TableExporter exporter;
+    public TableController(DocumentParser parser, TableEngine engine, TableExporter exporter) {
+        this.parser = parser; this.engine = engine; this.exporter = exporter;
+    }
+    @GetMapping("/health") public Map<String, String> health() { return Map.of("status", "ok", "version", "0.1.0"); }
+
+    @PostMapping(value="/files/parse", consumes=MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ParseResult parse(@RequestParam MultipartFile file, @RequestParam(required=false) String sheet,
+                             @RequestParam(defaultValue="UTF-8") String encoding,
+                             @RequestParam(defaultValue=",") String delimiter, @RequestParam(defaultValue="0") int page,
+                             @RequestParam(defaultValue="false") boolean externalConsent) throws IOException {
+        return parser.parse(file, sheet, encoding, delimiter, page, externalConsent);
+    }
+    @PostMapping("/tables/transform") public Table transform(@Valid @RequestBody Table table) { return engine.transform(table); }
+    @PostMapping("/tables/validate") public ValidationResult validate(@Valid @RequestBody Table table) { return engine.validate(table); }
+
+    public record SqlRequest(@NotNull @Valid Table table, @NotNull TableExporter.Dialect dbms,
+                             @NotBlank @Size(max=64) String tableName) {}
+    @PostMapping("/exports/sql") public ResponseEntity<byte[]> sql(@Valid @RequestBody SqlRequest request, @RequestHeader(value="X-TableFlow-Reviewed", defaultValue="false") boolean reviewed) {
+        requireReview(request.table(), reviewed);
+        return download(exporter.sql(request.table(), request.dbms(), request.tableName()), "application/sql", "tableflow.sql");
+    }
+    @PostMapping("/exports/excel") public ResponseEntity<byte[]> excel(@Valid @RequestBody Table table, @RequestHeader(value="X-TableFlow-Reviewed", defaultValue="false") boolean reviewed) throws IOException {
+        requireReview(table, reviewed);
+        return download(exporter.excel(table), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "tableflow.xlsx");
+    }
+    private void requireReview(Table table, boolean reviewed) {
+        if (table.source().extractionMethod().contains("ocr") && !reviewed)
+            throw new IllegalArgumentException("OCR 결과를 원본과 대조한 후 검토 확인을 해주세요.");
+    }
+    private ResponseEntity<byte[]> download(byte[] data, String type, String filename) {
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType(type))
+            .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename(filename).build().toString())
+            .header(HttpHeaders.CACHE_CONTROL, "no-store").body(data);
+    }
+}

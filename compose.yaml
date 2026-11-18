@@ -1,0 +1,20 @@
+services:
+  mysql:
+    image: mysql:8.4@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902
+    ports:
+      - "127.0.0.1:3307:3306"
+    environment:
+      MYSQL_DATABASE: tableflow
+      MYSQL_USER: tableflow
+      MYSQL_PASSWORD: ${TABLEFLOW_MYSQL_PASSWORD:?Set TABLEFLOW_MYSQL_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${TABLEFLOW_MYSQL_ROOT_PASSWORD:?Set TABLEFLOW_MYSQL_ROOT_PASSWORD in .env}
+    volumes:
+      - tableflow-mysql:/var/lib/mysql
+      - ./infra/mysql/init.sql:/docker-entrypoint-initdb.d/001-tableflow.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+volumes:
+  tableflow-mysql:
