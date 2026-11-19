@@ -54,23 +54,23 @@ cd ..
 ## 구현 기능
 
 - CSV: UTF-8/BOM, MS949, EUC-KR, 쉼표·세미콜론·탭·파이프 구분자, 인용부호와 줄바꿈
-- XLSX: 시트 선택, 첫 행 헤더, 날짜 셀, 수식 원문 보존
+- XLSX: 시트 선택, 헤더 행 선택, 날짜 셀, 수식 원문 보존
 - PDF: 텍스트 좌표 기반 표 추출, 최대 20페이지, 페이지별 표 선택·편집 내용 보존
 - PNG/JPEG/스캔 PDF: RapidOCR + ONNX Runtime 실제 로컬 추론, 한글/영문·숫자 샘플 검증
 - OCR 출처·페이지·셀별 신뢰도·원본 확인, 검토 확인 후 다운로드, 타임아웃 시 프로세스 종료
 - 기본 타입 추정, 셀 편집, 원본 값 보존, 대상 컬럼 이름·포함 여부·자료형·필수값·길이·정밀도 설정
 - 정수/소수/날짜/일시/불리언 정규화, 셀 오류·중복 행·식별자 검증
-- Oracle/MySQL INSERT SQL 다운로드, XLSX 다운로드
+- Oracle/PostgreSQL/MySQL/MariaDB INSERT SQL 다운로드, XLSX·CSV 다운로드
 - 실제 MySQL 배치 INSERT, 대상 스키마 검사, 전체 트랜잭션·롤백, 영수증 기반 중복 요청 방지
 - 요청·업로드 제한, XLSX 압축 해제 크기 제한, 문자열 안전 처리, Excel 수식 실행 방지
 
 ## 3분 시연
 
-1. 화면에서 **샘플 CSV 다운로드** 후 파일을 업로드합니다.
+1. 화면에서 **샘플 데이터로 시작**을 누릅니다. 실제 CSV 파서로 데이터를 불러옵니다.
 2. **컬럼 매핑**에서 사원번호→`EMP_NO`(문자열), 이름→`EMP_NM`(문자열), 입사일→`HIRE_DT`(날짜), 급여→`SALARY`(소수)로 설정합니다.
 3. 이름을 필수값으로 설정하고 미리보기에서 첫 번째 이름을 지운 뒤 검증 오류를 확인합니다.
 4. 이름을 복구하고 **데이터 검증**을 눌러 급여의 쉼표가 제거되는 것을 확인합니다.
-5. Oracle/MySQL을 각각 선택하여 SQL을 내려받고, Excel 파일도 내려받습니다.
+5. 원하는 DBMS로 SQL을 내려받고, 대상 선택을 Excel 또는 CSV로 바꿔 파일도 내려받습니다.
 
 OCR 시연: 화면의 **이미지 샘플** 다운로드 → 업로드 → 로컬 OCR 출처/신뢰도 확인 → 수정/컬럼 타입 설정 → 검증 → 원본 대조 검토 확인 → SQL/Excel 다운로드. PDF 샘플은 두 페이지의 표를 선택하며 편집할 수 있습니다. 스캔 샘플: `frontend/public/samples/table-scan.pdf`.
 
@@ -85,7 +85,7 @@ docker compose up -d --wait
 .\scripts\backend.ps1
 ```
 
-화면에서 샘플 컬럼 매핑·검증 → **MySQL DB 적재**에서 대상 확인 → 스키마 검사 → 실제 적재 동의 → 실행합니다. 기본은 비활성화이며 DB 비밀번호는 서버에만 유지합니다. 실제 적재는 로컬 접근만 허용하고 공개 배포에서는 노출하지 않습니다. [설정·권한·롤백·재시도 안내](docs/database-loading.md)
+화면에서 샘플 컬럼 매핑·검증 → **데이터베이스 적재**를 선택하고 대상 확인 → 스키마 검사 → 실제 적재 동의 → 실행합니다. 기본은 비활성화이며 DB 비밀번호는 서버에만 유지합니다. 실제 적재는 로컬 접근만 허용하고 공개 배포에서는 노출하지 않습니다. [설정·권한·롤백·재시도 안내](docs/database-loading.md)
 
 ## 테스트 실행
 
@@ -94,6 +94,7 @@ cd C:\dev\TableFlow\backend
 .\gradlew.bat test bootJar
 cd ..\frontend
 npm ci
+$env:NEXT_PUBLIC_API_URL="http://localhost:18080/api/v1"
 npm run build
 npx playwright install chromium
 npm run test:e2e
@@ -139,4 +140,8 @@ scripts/     Windows 실행 보조 스크립트
 - XLSX 출력은 값들을 문자열 셀로 기록해 수식 실행과 숫자 반올림을 방지합니다.
 - 실제 DB 적재는 MySQL에서 검증했습니다. 대상은 미리 준비한 트리거 없는 InnoDB 테이블이어야 합니다. 원격 인증/권한, Oracle 직접 적재, UPDATE/DELETE/DDL/스케줄링은 지원하지 않습니다.
 
+이번 변경은 Phase 1을 우선했습니다. 범용 JDBC 연결 테스트·메타데이터 탐색을 구현했습니다(실서버 미검증). DB 추출/이관은 미구현입니다. [DBMS별 지원 범위](docs/DATABASE_SUPPORT.md) · [이번 검증 결과](docs/TEST_RESULTS.md)
+
 상세: [개발 현황](docs/DEVELOPMENT_STATUS.md) · [API](docs/api.md) · [아키텍처](docs/architecture.md) · [요구사항](docs/requirements.md)
+
+멀티 DB 적재 추가: 대상 연결을 사용한 Oracle/PostgreSQL/MySQL/MariaDB INSERT를 구현했습니다. 실제 DB 검증은 디스크 부족/Docker 장애로 대기 중입니다. [사용법·제약·실제 테스트](docs/jdbc-loading.md)

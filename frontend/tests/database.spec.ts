@@ -19,6 +19,8 @@ for (const shouldFail of [false, true]) {
       await page.getByLabel("SALARY 자료형", {exact:true}).selectOption("decimal");
       await page.getByRole("button", {name:"데이터 검증",exact:true}).click();
       await expect(page.getByText("모든 검증을 통과했습니다. 파일을 내보낼 수 있습니다.")).toBeVisible();
+      await page.getByRole("button", {name:"데이터베이스 적재",exact:true}).click();
+      await page.getByText("기존 서버 등록 MySQL 적재",{exact:true}).click();
       await page.getByRole("button", {name:"적재 대상 확인",exact:true}).click();
       await page.getByRole("combobox", {name:"DB 대상 테이블",exact:true}).selectOption("TB_EMPLOYEE");
       await page.getByRole("button", {name:"연결·스키마 검사",exact:true}).click();
@@ -34,7 +36,7 @@ for (const shouldFail of [false, true]) {
       } else {
         await expect(page.getByText(/적재 완료: 1행/)).toBeVisible();
         expect(sql(`SELECT COUNT(*) FROM TB_EMPLOYEE WHERE EMP_NO='${id}' AND SALARY=15000`)).toBe("1");
-        const replay = await page.request.post("http://localhost:8080/api/v1/loads/database", {data:body});
+        const replay = await page.request.post("http://localhost:18080/api/v1/loads/database", {data:body});
         expect(replay.status()).toBe(200); expect((await replay.json()).replayed).toBe(true);
         expect(sql(`SELECT COUNT(*) FROM TB_EMPLOYEE WHERE EMP_NO='${id}'`)).toBe("1");
         await page.screenshot({path:"test-results/mysql-loaded.png",fullPage:true});

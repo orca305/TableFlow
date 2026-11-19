@@ -19,12 +19,15 @@ public class DocumentParser {
         return parse(file, sheet, encoding, delimiter, page, false);
     }
     public ParseResult parse(MultipartFile file, String sheet, String encoding, String delimiter, int page, boolean externalConsent) throws IOException {
+        return parse(file, sheet, encoding, delimiter, page, externalConsent, 1);
+    }
+    public ParseResult parse(MultipartFile file, String sheet, String encoding, String delimiter, int page, boolean externalConsent, int headerRow) throws IOException {
         String filename = Optional.ofNullable(file.getOriginalFilename()).orElse("upload").replace('\\', '/');
         filename = filename.substring(filename.lastIndexOf('/') + 1);
         if (file.isEmpty() || file.getSize() > 10 * 1024 * 1024 || filename.length() > 255)
             throw new IllegalArgumentException("파일 크기(최대 10MB)와 파일명을 확인해주세요.");
         String name = filename.toLowerCase(Locale.ROOT);
-        if (name.endsWith(".csv") || name.endsWith(".xlsx")) return parser.parse(file, sheet, encoding, delimiter);
+        if (name.endsWith(".csv") || name.endsWith(".xlsx")) return parser.parse(file, sheet, encoding, delimiter, headerRow);
         byte[] bytes = file.getBytes();
         if (name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg")) {
             boolean png = bytes.length >= 8 && java.util.HexFormat.of().formatHex(bytes, 0, 8).equals("89504e470d0a1a0a");

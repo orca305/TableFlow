@@ -164,4 +164,64 @@ class TableFlowTests {
         mvc.perform(post("/api/v1/exports/excel").header("X-TableFlow-Reviewed", "true").contentType("application/json").content(json.writeValueAsBytes(ocr)))
             .andExpect(status().isOk());
     }
+
+    @Test void duplicatePoliciesKeepWarningsSeparateFromErrors() throws Exception {
+        Table t = csv("name,amount\nA,1\nA,1\nB,2\n");
+        assertFalse(engine.validate(t, TableEngine.DuplicateMode.strict).valid());
+        var warning = engine.validate(t, TableEngine.DuplicateMode.warn);
+        assertTrue(warning.valid());
+        assertEquals("warning", warning.issues().getFirst().severity());
+        assertTrue(engine.validate(t, TableEngine.DuplicateMode.keep).issues().isEmpty());
+        Table excluded = engine.transform(t, TableEngine.DuplicateMode.exclude);
+        assertEquals(2, excluded.rows().size());
+        assertEquals(t.rows().getFirst().id(), excluded.rows().getFirst().id());
+        String sql = new String(exporter.sql(t, TableExporter.Dialect.postgresql, "T", TableEngine.DuplicateMode.exclude), StandardCharsets.UTF_8);
+        assertEquals(2, sql.lines().filter(line -> line.startsWith("INSERT")).count());
+        Table lateError = typed(csv("amount\n" + "1\n".repeat(1100) + "bad\n"), DataType.integer);
+        var result = engine.validate(lateError, TableEngine.DuplicateMode.warn);
+        assertFalse(result.valid());
+        assertEquals("VALUE", result.issues().getFirst().code());
+    }
+
+    @Test void postgresAndMariaDbPreserveEscapesDatesAndNulls() throws Exception {
+        Table t = typed(csv("text,flag,at\nO'Brien\\path,true,2026-11-19T12:34:56.123456\n"), DataType.string, DataType.bool, DataType.datetime);
+        String pg = new String(exporter.sql(t, TableExporter.Dialect.postgresql, "T"), StandardCharsets.UTF_8);
+        assertTrue(pg.contains("E'O''Brien\\\\path'"));
+        assertTrue(pg.contains("TRUE"));
+        assertTrue(pg.contains("TIMESTAMP '2026-11-19 12:34:56.123456'"));
+        String maria = new String(exporter.sql(t, TableExporter.Dialect.mariadb, "T"), StandardCharsets.UTF_8);
+        assertTrue(maria.contains("`T`")); assertTrue(maria.contains("CONVERT(X'"));
+        assertThrows(IllegalArgumentException.class, () -> exporter.sql(t, TableExporter.Dialect.postgresql, "T".repeat(64)));
+        Table excessive = typed(csv("at\n2026-11-19T12:34:56.1234567\n"), DataType.datetime);
+        assertThrows(IllegalArgumentException.class, () -> exporter.sql(excessive, TableExporter.Dialect.postgresql, "T"));
+        assertDoesNotThrow(() -> exporter.sql(excessive, TableExporter.Dialect.oracle, "T"));
+    }
+
+    @Test void csvProtectsFormulasWithoutChangingNegativeNumbers() throws Exception {
+        Table t = csv("text,amount\n=1+1,-12.50\n\"a,b\",2\n@SUM(A1),3\n");
+        String output = new String(exporter.csv(t, TableEngine.DuplicateMode.warn), StandardCharsets.UTF_8);
+        assertTrue(output.startsWith("\uFEFF"));
+        assertTrue(output.contains("'=1+1,-12.50"));
+        assertTrue(output.contains("\"a,b\"")); assertTrue(output.contains("'@SUM(A1)"));
+    }
+
+    @Test void chosenHeaderAndFormattedTrailingCellsAreHandled() throws Exception {
+        var file = new MockMultipartFile("file", "headers.csv", "text/csv", "Report\nname,amount\nA,1\n".getBytes(StandardCharsets.UTF_8));
+        var parsed = parser.parse(file, null, "UTF-8", ",", 2);
+        assertEquals("name", parsed.tables().getFirst().columns().getFirst().name());
+        assertEquals(1, parsed.tables().getFirst().rows().size());
+        byte[] bytes;
+        try (var book = new XSSFWorkbook(); var out = new ByteArrayOutputStream()) {
+            var sheet = book.createSheet("Data"); sheet.createRow(0).createCell(0).setCellValue("Title");
+            sheet.createRow(1).createCell(0).setCellValue("amount");
+            sheet.createRow(2).createCell(0).setCellValue(123456789.123456);
+            sheet.createRow(50000).createCell(200).setCellStyle(book.createCellStyle());
+            book.write(out); bytes = out.toByteArray();
+        }
+        var xlsx = parser.parse(new MockMultipartFile("file", "header.xlsx", "application/octet-stream", bytes), null, "UTF-8", ",", 2);
+        assertEquals(1, xlsx.tables().getFirst().rows().size());
+        assertEquals("123456789.123456", xlsx.tables().getFirst().rows().getFirst().cells().get("col_1").raw());
+        mvc.perform(multipart("/api/v1/files/parse").file(file).param("headerRow", "99"))
+            .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("HEADER_ROW")).andExpect(jsonPath("$.hint").isNotEmpty());
+    }
 }

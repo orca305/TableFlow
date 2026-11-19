@@ -28,21 +28,27 @@ public class TableController {
     public ParseResult parse(@RequestParam MultipartFile file, @RequestParam(required=false) String sheet,
                              @RequestParam(defaultValue="UTF-8") String encoding,
                              @RequestParam(defaultValue=",") String delimiter, @RequestParam(defaultValue="0") int page,
-                             @RequestParam(defaultValue="false") boolean externalConsent) throws IOException {
-        return parser.parse(file, sheet, encoding, delimiter, page, externalConsent);
+                             @RequestParam(defaultValue="false") boolean externalConsent, @RequestParam(defaultValue="1") int headerRow) throws IOException {
+        return parser.parse(file, sheet, encoding, delimiter, page, externalConsent, headerRow);
     }
-    @PostMapping("/tables/transform") public Table transform(@Valid @RequestBody Table table) { return engine.transform(table); }
-    @PostMapping("/tables/validate") public ValidationResult validate(@Valid @RequestBody Table table) { return engine.validate(table); }
+    @PostMapping("/tables/transform") public Table transform(@Valid @RequestBody Table table, @RequestParam(defaultValue="strict") TableEngine.DuplicateMode duplicateMode) { return engine.transform(table, duplicateMode); }
+    @PostMapping("/tables/validate") public ValidationResult validate(@Valid @RequestBody Table table, @RequestParam(defaultValue="strict") TableEngine.DuplicateMode duplicateMode) { return engine.validate(table, duplicateMode); }
 
     public record SqlRequest(@NotNull @Valid Table table, @NotNull TableExporter.Dialect dbms,
                              @NotBlank @Size(max=64) String tableName) {}
-    @PostMapping("/exports/sql") public ResponseEntity<byte[]> sql(@Valid @RequestBody SqlRequest request, @RequestHeader(value="X-TableFlow-Reviewed", defaultValue="false") boolean reviewed) {
+    @PostMapping("/exports/sql") public ResponseEntity<byte[]> sql(@Valid @RequestBody SqlRequest request, @RequestParam(defaultValue="strict") TableEngine.DuplicateMode duplicateMode, @RequestHeader(value="X-TableFlow-Reviewed", defaultValue="false") boolean reviewed) {
         requireReview(request.table(), reviewed);
-        return download(exporter.sql(request.table(), request.dbms(), request.tableName()), "application/sql", "tableflow.sql");
+        return download(exporter.sql(request.table(), request.dbms(), request.tableName(), duplicateMode), "application/sql", "tableflow.sql");
     }
-    @PostMapping("/exports/excel") public ResponseEntity<byte[]> excel(@Valid @RequestBody Table table, @RequestHeader(value="X-TableFlow-Reviewed", defaultValue="false") boolean reviewed) throws IOException {
+    @PostMapping("/exports/excel") public ResponseEntity<byte[]> excel(@Valid @RequestBody Table table, @RequestParam(defaultValue="strict") TableEngine.DuplicateMode duplicateMode, @RequestHeader(value="X-TableFlow-Reviewed", defaultValue="false") boolean reviewed) throws IOException {
         requireReview(table, reviewed);
-        return download(exporter.excel(table), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "tableflow.xlsx");
+        return download(exporter.excel(table, duplicateMode), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "tableflow.xlsx");
+    }
+    @PostMapping("/exports/csv") public ResponseEntity<byte[]> csv(@Valid @RequestBody Table table,
+            @RequestParam(defaultValue="strict") TableEngine.DuplicateMode duplicateMode,
+            @RequestHeader(value="X-TableFlow-Reviewed", defaultValue="false") boolean reviewed) throws IOException {
+        requireReview(table, reviewed);
+        return download(exporter.csv(table, duplicateMode), "text/csv;charset=UTF-8", "tableflow.csv");
     }
     private void requireReview(Table table, boolean reviewed) {
         if (table.source().extractionMethod().contains("ocr") && !reviewed)

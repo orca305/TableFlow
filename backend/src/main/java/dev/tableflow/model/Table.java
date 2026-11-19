@@ -35,6 +35,16 @@ public record Table(
     public record Cell(@Size(max=32767) String raw, @Size(max=32767) String value,
                        @DecimalMin("0") @DecimalMax("1") Double confidence, boolean edited) {}
     public record ParseResult(List<Table> tables, List<String> warnings, List<String> sheets) {}
-    public record Issue(String rowId, String columnId, String code, String message) {}
+    public record Issue(String rowId, String columnId, String code, String message, String severity, String solution) {
+        public Issue(String rowId, String columnId, String code, String message) {
+            this(rowId, columnId, code, message, "error", switch (code) {
+                case "VALUE" -> "값 또는 자료형·필수·길이·정밀도 설정을 확인하고 다시 검증하세요.";
+                case "DUPLICATE_ROW" -> "중복 처리에서 경고·유지·제외 중 원하는 방식을 선택하세요.";
+                case "IDENTIFIER", "DUPLICATE_COLUMN" -> "컬럼 매핑에서 고유한 영문 대상 컬럼명을 지정하세요.";
+                case "NO_COLUMNS" -> "컬럼 매핑에서 출력할 컬럼을 하나 이상 포함하세요.";
+                default -> "문제가 있는 행과 컬럼 설정을 확인한 뒤 다시 검증하세요.";
+            });
+        }
+    }
     public record ValidationResult(boolean valid, List<Issue> issues) {}
 }

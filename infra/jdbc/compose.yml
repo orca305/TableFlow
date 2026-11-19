@@ -1,0 +1,55 @@
+# Disposable local integration databases, separate from the main compose project.
+# Public fixture passwords are for these empty loopback-only containers only.
+name: tableflow-jdbc-tests
+services:
+  postgresql:
+    image: postgres:17-alpine
+    ports: ["127.0.0.1:15432:5432"]
+    environment:
+      POSTGRES_USER: tableflow
+      POSTGRES_PASSWORD: TableFlowTest2026
+      POSTGRES_DB: tableflow
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tableflow -d tableflow"]
+      interval: 5s
+      retries: 30
+  mysql:
+    image: mysql:8.4
+    ports: ["127.0.0.1:13316:3306"]
+    command: ["--mysql-native-password=ON"]
+    environment:
+      MYSQL_DATABASE: tableflow
+      MYSQL_USER: tableflow
+      MYSQL_PASSWORD: TableFlowTest2026
+      MYSQL_ROOT_PASSWORD: TableFlowRootTest2026
+    volumes:
+      - ./mysql-test-auth.sql:/docker-entrypoint-initdb.d/001-auth.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      retries: 40
+  mariadb:
+    image: mariadb:11.8
+    ports: ["127.0.0.1:13317:3306"]
+    environment:
+      MARIADB_DATABASE: tableflow
+      MARIADB_USER: tableflow
+      MARIADB_PASSWORD: TableFlowTest2026
+      MARIADB_ROOT_PASSWORD: TableFlowRootTest2026
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      retries: 40
+  oracle:
+    profiles: [oracle]
+    image: gvenzl/oracle-free:23.26.3-slim
+    ports: ["127.0.0.1:11521:1521"]
+    shm_size: 1gb
+    environment:
+      ORACLE_PASSWORD: TableFlowRootTest2026
+      APP_USER: tableflow
+      APP_USER_PASSWORD: TableFlowTest2026
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      retries: 60

@@ -51,7 +51,11 @@ public class TableEngine {
         };
     }
 
-    public ValidationResult validate(Table table) {
+    public enum DuplicateMode { strict, warn, keep, exclude }
+
+    public ValidationResult validate(Table table) { return validate(table, DuplicateMode.strict); }
+
+    public ValidationResult validate(Table table, DuplicateMode duplicateMode) {
         List<Issue> issues = new ArrayList<>();
         Set<String> ids = new HashSet<>(), targets = new HashSet<>(), rowIds = new HashSet<>();
         List<Column> included = table.columns().stream().filter(Column::included).toList();
@@ -66,7 +70,7 @@ public class TableEngine {
         }
         Set<List<String>> seen = new HashSet<>();
         for (Table.Row row : table.rows()) {
-            if (issues.size() >= 1000) break;
+            if (issues.size() >= 1000 && issues.stream().anyMatch(issue -> issue.severity().equals("error"))) break;
             if (!rowIds.add(row.id())) issues.add(new Issue(row.id(), null, "DUPLICATE_ID", "행 ID가 중복됩니다."));
             if (!row.cells().keySet().equals(ids)) issues.add(new Issue(row.id(), null, "CELL_KEYS", "행의 셀 ID가 컬럼 ID와 일치하지 않습니다."));
             List<String> normalized = new ArrayList<>();
@@ -92,12 +96,17 @@ public class TableEngine {
                     issues.add(new Issue(row.id(), c.id(), "VALUE", e.getMessage())); rowValid = false;
                 }
             }
-            if (rowValid && !seen.add(normalized)) issues.add(new Issue(row.id(), null, "DUPLICATE_ROW", "포함된 컬럼 기준으로 중복된 행입니다."));
+            if (rowValid && !seen.add(normalized) && duplicateMode != DuplicateMode.keep && duplicateMode != DuplicateMode.exclude) {
+                issues.add(new Issue(row.id(), null, "DUPLICATE_ROW", "포함된 컬럼 기준으로 중복된 행입니다.",
+                    duplicateMode == DuplicateMode.warn ? "warning" : "error", "중복을 유지하거나, 중복 제외 후 다시 검증할 수 있습니다."));
+            }
         }
-        return new ValidationResult(issues.isEmpty(), issues.size() > 1000 ? issues.subList(0, 1000) : issues);
+        return new ValidationResult(issues.stream().noneMatch(issue -> issue.severity().equals("error")), issues.stream().sorted(Comparator.comparingInt(issue -> issue.severity().equals("error") ? 0 : 1)).limit(1000).toList());
     }
 
-    public Table transform(Table table) {
+    public Table transform(Table table) { return transform(table, DuplicateMode.strict); }
+
+    public Table transform(Table table, DuplicateMode duplicateMode) {
         List<Table.Row> rows = table.rows().stream().map(row -> {
             Map<String, Table.Cell> cells = new LinkedHashMap<>(row.cells());
             for (Column c : table.columns()) {
@@ -108,6 +117,21 @@ public class TableEngine {
             }
             return new Table.Row(row.id(), cells);
         }).toList();
+        if (duplicateMode == DuplicateMode.exclude) {
+            Set<List<String>> seen = new HashSet<>();
+            List<Column> included = table.columns().stream().filter(Column::included).toList();
+            rows = rows.stream().filter(row -> {
+                List<String> values = new ArrayList<>();
+                try {
+                    for (Column column : included) {
+                        Table.Cell cell = row.cells().get(column.id());
+                        if (cell == null) return true;
+                        values.add(normalize(cell.value(), column.dataType()));
+                    }
+                } catch (IllegalArgumentException error) { return true; }
+                return seen.add(values);
+            }).toList();
+        }
         return new Table(table.schemaVersion(), table.tableId(), table.name(), table.source(), table.columns(), rows);
     }
 }

@@ -33,7 +33,8 @@ for (const [filename, column, expected] of [["table-en.png", "Name", "Alice"], [
     expect(sql).toContain(expected); expect(sql).toContain("15000");
     if (filename === "table-ko.png") {
       const excel = page.waitForEvent("download");
-      await page.getByRole("button", { name: "Excel ↓", exact: true }).click();
+      await page.getByRole("button", { name: "Excel 파일", exact: true }).click();
+  await page.getByRole("button", { name: "Excel ↓", exact: true }).click();
       expect((await readFile((await (await excel).path())!)).subarray(0, 2).toString()).toBe("PK");
       await page.screenshot({ path: "test-results/ocr-reviewed.png", fullPage: true });
     }

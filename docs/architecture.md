@@ -7,8 +7,8 @@ flowchart LR
     U -->|JSON 표와 매핑| T[TableEngine 정규화·검증]
     T --> U
     U --> E[TableExporter]
-    E --> S[Oracle / MySQL SQL 파일]
-    E --> X[XLSX 파일]
+    E --> S[Oracle / MySQL / PostgreSQL / MariaDB SQL 파일]
+    E --> X[XLSX / CSV 파일]
     P --> D[PDFBox 텍스트 좌표 추출]
     P --> O[FastAPI OCR 서비스]
     O --> M[Mock / Local RapidOCR / External Gateway]
@@ -23,7 +23,7 @@ flowchart LR
 - FileParser: 실제 Apache POI / Commons CSV 파싱. 파일을 디스크에 영구 저장하지 않습니다.
 - Table: 컬럼 ID, raw/value, 수정 여부, 신뢰도(null), 버전이 있는 Java record 기반 공통 계약입니다.
 - TableEngine: 규칙 기반 정규화, 필수·자료형·길이·정밀도·중복·셀 키 정합성 검사입니다.
-- TableExporter: Oracle/MySQL enum dialect로 인용·리터럴을 분리합니다. 출력 전에 반드시 재검증합니다.
+- TableExporter: Oracle/MySQL/PostgreSQL/MariaDB enum dialect로 인용·리터럴을 분리합니다. 출력 전에 반드시 재검증합니다.
 - 프런트엔드는 표를 메모리에 유지합니다. 50행 단위로 표시하며 편집 시 검증 결과를 무효화합니다.
 - 작업 이력용 내부 DB/인증/스케줄러/큐는 없습니다. 추가 승인된 실제 적재 대상 MySQL과 중복 방지용 영수증은 사용합니다.
 
@@ -46,3 +46,7 @@ OCR은 mock/local/external 공급자를 분리했습니다. 외부 전송에는 
 MySQL 직접 적재는 DatabaseLoader에서 기존 공통 검증 후 JDBC 바인딩·250행 배치·단일 트랜잭션으로 수행합니다. 대상 엔진/매핑/필수값/정밀도를 검사하고 메타데이터 잠금을 유지합니다. 대상 데이터와 영수증을 함께 커밋하여 재시도·동시 요청이 중복 적재되지 않도록 합니다. API는 로컬 전용입니다. [DB 적재 상세](database-loading.md)
 
 공개 배포는 별도 Java 호스팅 선정 후 진행해야 합니다. 현재 로컬 UI를 공개 Live Demo로 표시하지 않습니다.
+
+## 2026-11-19 워크스페이스 개편
+
+파일 → Canonical Table → 정규화/검증 → 파일 출력 흐름을 유지했습니다. 범용 플러그인 프레임워크를 미리 도입하지 않고 기존 Dialect enum을 확장했습니다. 검증 severity와 중복 정책은 TableEngine에서 공유하고, 모든 파일 출력은 서버에서 재검증합니다. 화면의 이름 제안은 헤더 규칙 기반이며 실제 DB 스키마와 매칭한 결과가 아닙니다. JDBC 범용 연결·메타데이터 탐색·DB 소스 추출은 아직 구현하지 않았습니다. 기존 MySQL 적재의 PreparedStatement/트랜잭션/서버 설정 경계는 유지합니다.

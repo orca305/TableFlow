@@ -6,7 +6,7 @@ test("CSV upload, mapping, validation, editing and real downloads", async ({ pag
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "데이터를 다음 단계로." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "데이터 변환 워크스페이스" })).toBeVisible();
   await page.screenshot({ path: "test-results/workspace-empty.png", fullPage: true });
   await page.locator('input[type="file"]').setInputFiles(path.resolve("public/samples/employees.csv"));
   await expect(page.getByLabel("1행 사원번호", { exact: true })).toHaveValue("001");
@@ -36,8 +36,9 @@ test("CSV upload, mapping, validation, editing and real downloads", async ({ pag
   await page.getByRole("combobox", { name: "대상 DBMS", exact: true }).selectOption("mysql");
   const mysqlDownload = page.waitForEvent("download");
   await page.getByRole("button", { name: "SQL 내보내기" }).click();
-  expect(await readFile((await (await mysqlDownload).path())!, "utf8")).toContain("`TB_EMPLOYEE`");
+  expect(await readFile((await (await mysqlDownload).path())!, "utf8")).toContain("`TB_EMPLOYEES`");
   const excelDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Excel 파일", exact: true }).click();
   await page.getByRole("button", { name: "Excel ↓", exact: true }).click();
   expect((await readFile((await (await excelDownload).path())!)).subarray(0, 2).toString()).toBe("PK");
   await page.screenshot({ path: "test-results/workspace-validated.png", fullPage: true });
@@ -58,4 +59,23 @@ test("mobile layout fits the viewport", async ({ page }) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await expect(page.getByRole("button", { name: "파일 선택", exact: true })).toBeVisible();
   await page.screenshot({ path: "test-results/workspace-mobile.png", fullPage: true });
+});
+
+test("sample, duplicate policies, PostgreSQL and CSV downloads", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", {name:"중복 데이터",exact:true}).click();
+  await expect(page.getByLabel("1행 이름", {exact:true})).toBeVisible();
+  await page.getByRole("button", {name:"데이터 검증",exact:true}).click();
+  await expect(page.getByText("경고 · 포함된 컬럼 기준으로 중복된 행입니다.")).toBeVisible();
+  await page.getByRole("combobox", {name:"대상 DBMS",exact:true}).selectOption("postgresql");
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", {name:"SQL 내보내기 ↓",exact:true}).click();
+  expect(await readFile((await (await download).path())!, "utf8")).toContain('INSERT INTO "TB_DUPLICATES"');
+  await page.getByRole("combobox", {name:"중복 행 처리",exact:true}).selectOption("exclude");
+  await page.getByRole("button", {name:"데이터 검증",exact:true}).click();
+  await expect(page.getByLabel("3행 이름", {exact:true})).toHaveCount(0);
+  await page.getByRole("button", {name:"CSV 파일",exact:true}).click();
+  const csv = page.waitForEvent("download");
+  await page.getByRole("button", {name:"CSV 내보내기 ↓",exact:true}).click();
+  expect(await readFile((await (await csv).path())!, "utf8")).toContain("EMP_NM");
 });

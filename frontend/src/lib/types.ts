@@ -9,6 +9,6 @@ export interface Table {
   source: { filename: string; type: string; extraction_method: string; page?: number | null; provider?: string | null };
   columns: Column[]; rows: { id: string; cells: Record<string, Cell> }[];
 }
-export interface Issue { rowId: string | null; columnId: string | null; code: string; message: string }
+export interface Issue { rowId: string | null; columnId: string | null; code: string; message: string; severity?: "error" | "warning"; solution?: string }
 export interface ValidationResult { valid: boolean; issues: Issue[] }
 export interface ParseResult { tables: Table[]; warnings: string[]; sheets: string[] }

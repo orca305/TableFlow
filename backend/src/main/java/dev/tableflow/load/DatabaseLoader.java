@@ -121,7 +121,7 @@ public class DatabaseLoader {
             }
         }
     }
-    private void inspect(Connection connection, String name, List<Column> columns, Table table) throws SQLException {
+    void inspect(Connection connection, String name, List<Column> columns, Table table) throws SQLException {
         try (PreparedStatement triggers = connection.prepareStatement("SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE EVENT_OBJECT_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE IN (?,?)")) {
             triggers.setString(1, name); triggers.setString(2, RECEIPTS);
             try (ResultSet found = triggers.executeQuery()) {

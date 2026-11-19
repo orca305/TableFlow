@@ -13,6 +13,9 @@ import java.util.Map;
 
 @RestControllerAdvice
 public class ApiErrors {
+    @ExceptionHandler(dev.tableflow.connection.JdbcExplorer.Failure.class) ResponseEntity<?> jdbc(dev.tableflow.connection.JdbcExplorer.Failure e) {
+        return error(e.status, e.code, e.getMessage());
+    }
     @ExceptionHandler(dev.tableflow.load.DatabaseLoader.LoadFailure.class) ResponseEntity<?> load(dev.tableflow.load.DatabaseLoader.LoadFailure e) {
         return error(e.status, e.code, e.getMessage());
     }
@@ -21,6 +24,11 @@ public class ApiErrors {
     }
     @ExceptionHandler(InvalidTable.class) ResponseEntity<?> invalid(InvalidTable e) {
         return ResponseEntity.unprocessableEntity().body(Map.of("code", "VALIDATION_FAILED", "message", e.getMessage(), "issues", e.result.issues()));
+    }
+    @ExceptionHandler(dev.tableflow.parser.FileParseException.class) ResponseEntity<?> parse(dev.tableflow.parser.FileParseException e) {
+        var body = new java.util.LinkedHashMap<String, Object>();
+        body.put("code", e.code); body.put("message", e.getMessage()); body.put("hint", e.hint); body.put("row", e.row);
+        return ResponseEntity.badRequest().body(body);
     }
     @ExceptionHandler(IllegalArgumentException.class) ResponseEntity<?> bad(IllegalArgumentException e) {
         return error(400, "INVALID_INPUT", e.getMessage());
