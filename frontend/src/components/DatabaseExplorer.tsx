@@ -3,17 +3,18 @@
 import { useEffect, useState } from "react";
 import type { Table } from "@/lib/types";
 import { request } from "@/lib/api";
+import { suggestMapping, type MappingSuggestion } from "@/lib/workspace";
 
 type Dbms = "oracle" | "postgresql" | "mysql" | "mariadb";
 type Connection = {dbms: Dbms; host: string; port: number; database: string; username: string; password: string; tls: boolean};
 type Driver = {dbms: Dbms; defaultPort: number; available: boolean; version: string};
 type Server = {product: string; serverVersion: string; driver: string; driverVersion: string};
-type Column = {name: string; type: string; size: number; scale: number; nullable: boolean; primaryKey: boolean; autoIncrement: boolean; position: number};
+type Column = {name: string; type: string; jdbcType?: number; size: number; scale: number; nullable: boolean; primaryKey: boolean; autoIncrement: boolean; position: number};
 type Items<T> = {items: T[]; truncated: boolean};
 const initial: Connection = {dbms:"postgresql", host:"localhost", port:5432, database:"", username:"", password:"", tls:true};
 const ports = {oracle:1521, postgresql:5432, mysql:3306, mariadb:3306};
 
-export default function DatabaseExplorer({role = "소스", data = null, canLoad = false, reviewed = false, onBusyChange}: {role?: string; data?: Table | null; canLoad?: boolean; reviewed?: boolean; onBusyChange?: (busy: boolean) => void}) {
+export default function DatabaseExplorer({role = "소스", data = null, canLoad = false, reviewed = false, onBusyChange, onExtract, onApplyMapping}: {role?: string; data?: Table | null; canLoad?: boolean; reviewed?: boolean; onBusyChange?: (busy: boolean) => void; onExtract?: (table: Table) => void; onApplyMapping?: (targets: Record<string, string>) => void}) {
   const [connection, setConnection] = useState<Connection>(initial);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [loadEnabled, setLoadEnabled] = useState(false);
@@ -21,13 +22,17 @@ export default function DatabaseExplorer({role = "소스", data = null, canLoad 
   const [confirmed, setConfirmed] = useState(false);
   const [requestId, setRequestId] = useState("");
   const [loaded, setLoaded] = useState(false);
-  function resetLoad() {setPlan(null); setConfirmed(false); setRequestId(""); setLoaded(false);}
+  function resetLoad() {setSuggestions(null); setMappingApplied(false); setPlan(null); setConfirmed(false); setRequestId(""); setLoaded(false);}
   useEffect(() => {setPlan(null);setConfirmed(false);setRequestId("");setLoaded(false);},[data]);
   const [enabled, setEnabled] = useState(false);
   const [server, setServer] = useState<Server | null>(null);
   const [schemas, setSchemas] = useState<string[]>([]);
   const [tables, setTables] = useState<string[]>([]);
   const [columns, setColumns] = useState<Column[]>([]);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [limit, setLimit] = useState(1000);
+  const [suggestions, setSuggestions] = useState<MappingSuggestion[] | null>(null);
+  const [mappingApplied, setMappingApplied] = useState(false);
   const [schema, setSchema] = useState("");
   const [table, setTable] = useState("");
   const [busy, setBusy] = useState(false);
@@ -50,7 +55,7 @@ export default function DatabaseExplorer({role = "소스", data = null, canLoad 
   function truncated(value: boolean) { if (value) setNotice("조회 개수 제한에 도달했습니다. 목록은 일부만 표시됩니다."); }
   const driver = drivers.find(item => item.dbms === connection.dbms);
   return <div className="db-explorer" aria-label={`${role} DB 메타데이터 탐색`}>
-    <div className="db-intro"><h3>{role} DB 연결 · 스키마 탐색</h3><p>{role === "대상" ? "선택한 DB 테이블에 검증한 데이터를 INSERT합니다. 스키마 검사와 실제 적재 동의 후 실행하세요." : "읽기 전용 메타데이터 조회입니다. 소스 행 추출은 아직 지원하지 않습니다."}</p></div>
+    <div className="db-intro"><h3>{role} DB 연결 · 스키마 탐색</h3><p>{role === "대상" ? "선택한 DB 테이블에 검증한 데이터를 INSERT합니다. 스키마 검사와 실제 적재 동의 후 실행하세요." : "읽기 전용 조회입니다. 테이블과 컬럼을 선택해 행을 추출하면 파일과 같은 방식으로 검토하고 CSV·Excel·SQL로 내보낼 수 있습니다."}</p></div>
     {!enabled && <div className="alert warning">서버에서 DB 탐색이 비활성화되어 있습니다. TABLEFLOW_JDBC_ENABLED=true 설정 후 백엔드를 재시작하세요.</div>}
     <form autoComplete="off" onSubmit={event => {event.preventDefault(); void run(async () => {
       clearResults(); const result: Server = await (await request("/connections/test", connection)).json(); setServer(result);
@@ -82,9 +87,24 @@ export default function DatabaseExplorer({role = "소스", data = null, canLoad 
       }}><option value="">선택해주세요</option>{schemas.map(name => <option key={name}>{name}</option>)}</select></label>
       <label>테이블 / 뷰<select aria-label="테이블 / 뷰" disabled={busy || !tables.length} value={table} onChange={event => {
         const next = event.target.value; resetLoad(); setTable(next); setColumns([]);
-        if (next) void run(async () => { const result: Items<Column> = await (await request("/connections/columns", {connection, schema, table:next})).json(); setColumns(result.items); truncated(result.truncated); if (!result.items.length) setNotice("조회 가능한 컬럼이 없습니다."); });
+        if (next) void run(async () => { const result: Items<Column> = await (await request("/connections/columns", {connection, schema, table:next})).json(); setColumns(result.items); setPicked(result.items.map(column => column.name)); truncated(result.truncated); if (!result.items.length) setNotice("조회 가능한 컬럼이 없습니다."); });
       }}><option value="">선택해주세요</option>{tables.map(name => <option key={name}>{name}</option>)}</select></label></div>
-      {columns.length > 0 && <div className="table-scroll"><table className="mapping-table"><thead><tr><th>컬럼</th><th>DB 타입</th><th>길이 / 정밀도</th><th>소수 자릿수</th><th>NULL</th><th>키</th></tr></thead><tbody>{columns.map(column => <tr key={column.name}><td>{column.name}</td><td>{column.type}</td><td>{column.size}</td><td>{column.scale}</td><td>{column.nullable ? "허용" : "필수"}</td><td>{[column.primaryKey ? "PK" : "", column.autoIncrement ? "자동 증가" : ""].filter(Boolean).join(" · ") || "—"}</td></tr>)}</tbody></table></div>}
+      {columns.length > 0 && <div className="table-scroll"><table className="mapping-table"><thead><tr>{role !== "대상" && <th>추출</th>}<th>컬럼</th><th>DB 타입</th><th>길이 / 정밀도</th><th>소수 자릿수</th><th>NULL</th><th>키</th></tr></thead><tbody>{columns.map(column => <tr key={column.name}>{role !== "대상" && <td><input type="checkbox" aria-label={`${column.name} 추출`} disabled={busy} checked={picked.includes(column.name)} onChange={event => setPicked(current => event.target.checked ? columns.map(item => item.name).filter(name => name === column.name || current.includes(name)) : current.filter(name => name !== column.name))} /></td>}<td>{column.name}</td><td>{column.type}</td><td>{column.size}</td><td>{column.scale}</td><td>{column.nullable ? "허용" : "필수"}</td><td>{[column.primaryKey ? "PK" : "", column.autoIncrement ? "자동 증가" : ""].filter(Boolean).join(" · ") || "—"}</td></tr>)}</tbody></table></div>}
+      {role !== "대상" && onExtract && columns.length > 0 && <div className="load-confirm">
+        <div className="db-fields"><label>최대 추출 행 수<input type="number" min={1} max={10000} aria-label="최대 추출 행 수" disabled={busy} value={limit} onChange={event => setLimit(Math.min(10000, Math.max(1, Number(event.target.value) || 1)))} /></label></div>
+        <p>선택한 {picked.length}개 컬럼을 최대 {limit.toLocaleString()}행까지 읽기 전용으로 가져옵니다(최대 10,000행). 이진(BLOB) 컬럼은 제외해주세요. 이 화면에서 DB 데이터는 변경되지 않습니다.</p>
+        <button className="primary" disabled={busy || !picked.length} onClick={() => void run(async () => {
+          const result: Table = await (await request("/connections/read", {connection, schema, table, columns:picked, limit})).json();
+          onExtract(result); setNotice(`${result.rows.length.toLocaleString()}행을 추출했습니다. 아래 워크벤치에서 검토·검증한 뒤 내보내세요.`);
+        })}>선택한 컬럼 행 추출</button>
+      </div>}
+      {role === "대상" && onApplyMapping && data && columns.length > 0 && <div className="load-confirm">
+        <button className="secondary" disabled={busy} onClick={() => {setSuggestions(suggestMapping(data, columns)); setMappingApplied(false);}}>DB 컬럼 기준 자동 매핑 추천</button>
+        {suggestions && <><div className="table-scroll"><table className="mapping-table"><thead><tr><th>원본 컬럼</th><th>추천 DB 컬럼</th><th>근거</th><th>비고</th></tr></thead><tbody>{suggestions.map(item => <tr key={item.columnId}><td>{item.source}</td><td>{item.target ?? "미확정"}</td><td>{{exact:"이름 일치", alias:"사용자·업무 용어 매핑", similar:"유사한 이름", none:"—"}[item.reason]}</td><td>{item.note || "—"}</td></tr>)}</tbody></table></div>
+          <p>추천은 확정이 아닙니다. 적용 후에도 컬럼 매핑 탭에서 확인·수정하세요. 미확정 컬럼은 현재 대상 컬럼명을 유지합니다.</p>
+          <button className="primary" disabled={busy || !suggestions.some(item => item.target)} onClick={() => {onApplyMapping(Object.fromEntries(suggestions.filter(item => item.target).map(item => [item.columnId, item.target as string]))); setMappingApplied(true); setNotice("추천 매핑을 적용했습니다. 데이터를 다시 검증한 뒤 적재 검사를 실행하세요.");}}>추천 {suggestions.filter(item => item.target).length}개 적용</button></>}
+        {mappingApplied && <small>적용 후에는 데이터 검증과 대상·스키마 검사를 다시 실행해야 합니다.</small>}
+      </div>}
       {role === "대상" && <div className="load-confirm">
         {!loadEnabled && <p>실제 적재는 비활성화되어 있습니다. TABLEFLOW_JDBC_LOAD_ENABLED=true 설정 후 백엔드를 재시작하세요.</p>}
         <a href={`/samples/${connection.dbms}-receipts.sql`} download>영수증 테이블 준비 SQL 다운로드 ↓</a>

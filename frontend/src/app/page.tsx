@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { suggestColumns, suggestTableName } from "@/lib/workspace";
 import DatabaseExplorer from "@/components/DatabaseExplorer";
+import MigrationPanel from "@/components/MigrationPanel";
+import JobHistory from "@/components/JobHistory";
 import { ApiError, request } from "@/lib/api";
 import type { Column, DataType, Issue, ParseResult, Table, ValidationResult } from "@/lib/types";
 
@@ -10,7 +12,7 @@ const types: [DataType, string][] = [["string", "문자열"], ["integer", "정�
 const pageSize = 50;
 
 export default function Home() {
-  const [sourceMode, setSourceMode] = useState<"file" | "database">("file");
+  const [sourceMode, setSourceMode] = useState<"file" | "database" | "migrate">("file");
   const [targetMode, setTargetMode] = useState<"sql" | "excel" | "csv" | "database">("sql");
   const [duplicateMode, setDuplicateMode] = useState("warn");
   const [headerRow, setHeaderRow] = useState(1);
@@ -109,6 +111,16 @@ export default function Home() {
       setWarnings(result.warnings); setPage(0); setTab("data");
     });
   }
+  function extracted(raw: Table) {
+    const next = suggestColumns(raw);
+    // DB → File: 추출한 표를 파일에서 읽은 표와 같은 흐름(검토 → 검증 → 내보내기)으로 넘긴다.
+    changed(next); setFile(null); setSheets([]); setSheet(""); setWarnings([]); setTables([next]); setSelectedTable(0);
+    setTableName(suggestTableName(next.name)); setPage(0); setTab("data");
+    setTimeout(() => document.getElementById("workbench")?.scrollIntoView({block: "start"}), 0);
+  }
+  function applyMapping(targets: Record<string, string>) {
+    if (table) changed({ ...table, columns: table.columns.map(c => targets[c.id] ? { ...c, target_name: targets[c.id] } : c) });
+  }
   function editCell(rowId: string, columnId: string, value: string) {
     if (!table) return;
     changed({ ...table, rows: table.rows.map(row => row.id === rowId
@@ -166,7 +178,7 @@ export default function Home() {
         {warnings.map((warning, i) => <div className="alert warning" key={i}>{warning}</div>)}
         <section id="source" className="panel upload-panel" aria-label="파일 업로드">
           <div className="section-title"><h2><span className="section-number">01</span> 데이터 소스</h2><div className="sample-links"><a href="/samples/employees.csv" download>샘플 CSV</a><a href="/samples/table-text.pdf" download>PDF</a><a href="/samples/table-ko.png" download>이미지 ↓</a></div></div>
-          <div className="source-tabs"><button className={sourceMode === "file" ? "active" : ""} onClick={() => setSourceMode("file")}>파일 업로드</button><button className={sourceMode === "database" ? "active" : ""} onClick={() => setSourceMode("database")}>데이터베이스 연결</button><button disabled={!!busy} onClick={() => { setSourceMode("file"); void loadSample(); }}>샘플 데이터로 시작</button></div>
+          <div className="source-tabs"><button className={sourceMode === "file" ? "active" : ""} onClick={() => setSourceMode("file")}>파일 업로드</button><button className={sourceMode === "database" ? "active" : ""} onClick={() => setSourceMode("database")}>데이터베이스 연결</button><button className={sourceMode === "migrate" ? "active" : ""} onClick={() => setSourceMode("migrate")}>DB → DB 이전</button><button disabled={!!busy} onClick={() => { setSourceMode("file"); void loadSample(); }}>샘플 데이터로 시작</button></div>
           {sourceMode === "file" ? <><div className={`dropzone ${dragging ? "dragging" : ""}`} onDragOver={e => { e.preventDefault(); if (!busy) setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={e => { e.preventDefault(); setDragging(false); if (!busy && e.dataTransfer.files[0]) void parse(e.dataTransfer.files[0]); }}>
             <div className="upload-icon">↥</div><div><h3>{file ? file.name : "파일을 여기에 놓아주세요"}</h3><p>Excel · CSV · PDF · PNG/JPEG · 최대 10MB</p></div>
             <button className="secondary" disabled={!!busy} onClick={() => fileInput.current?.click()}>파일 선택</button>
@@ -182,10 +194,10 @@ export default function Home() {
             <span className="privacy-note">원본 파일은 서버에 영구 저장하지 않습니다.</span>
           </div></details>
           <div className="sample-starts"><span>샘플:</span><button disabled={!!busy} onClick={() => void loadSample("employees.csv")}>기본 사원정보</button><button disabled={!!busy} onClick={() => void loadSample("validation-errors.csv")}>검증 오류</button><button disabled={!!busy} onClick={() => void loadSample("duplicates.csv")}>중복 데이터</button><button disabled={!!busy} onClick={() => void loadSample("multiple-sheets.xlsx")}>다중 시트 Excel</button></div>
-          <details className="ocr-options"><summary>OCR 전송 설정</summary><label><input type="checkbox" checked={externalConsent} disabled={!!busy} onChange={e => setExternalConsent(e.target.checked)} /> 이번 파일의 외부 OCR 전송에 동의합니다</label><p>로컬 OCR은 외부로 전송하지 않습니다. 외부 공급자는 서버의 명시적 허용과 파일별 동의가 모두 필요합니다.</p></details></> : <DatabaseExplorer />}
+          <details className="ocr-options"><summary>OCR 전송 설정</summary><label><input type="checkbox" checked={externalConsent} disabled={!!busy} onChange={e => setExternalConsent(e.target.checked)} /> 이번 파일의 외부 OCR 전송에 동의합니다</label><p>로컬 OCR은 외부로 전송하지 않습니다. 외부 공급자는 서버의 명시적 허용과 파일별 동의가 모두 필요합니다.</p></details></> : sourceMode === "migrate" ? <MigrationPanel /> : <DatabaseExplorer onExtract={extracted} />}
         </section>
         {table && <div className="source-info">
-          <span>추출: <strong>{table.source.extraction_method === "local_ocr" ? "로컬 OCR" : table.source.extraction_method === "mock_ocr" ? "MOCK · 고정 테스트 데이터" : table.source.extraction_method === "external_ocr" ? "외부 OCR" : table.source.extraction_method === "pdf_text" ? "PDF 텍스트" : "파일 파서"}</strong>{table.source.page ? ` · ${table.source.page}페이지` : ""}</span>
+          <span>추출: <strong>{table.source.extraction_method === "local_ocr" ? "로컬 OCR" : table.source.extraction_method === "mock_ocr" ? "MOCK · 고정 테스트 데이터" : table.source.extraction_method === "external_ocr" ? "외부 OCR" : table.source.extraction_method === "pdf_text" ? "PDF 텍스트" : table.source.extraction_method === "jdbc" ? `DB 추출 · ${table.source.filename}` : "파일 파서"}</strong>{table.source.page ? ` · ${table.source.page}페이지` : ""}</span>
           {tables.length > 1 && <label>추출된 표<select aria-label="추출된 표" disabled={!!busy} value={selectedTable} onChange={e => { resetLoad(); const index = Number(e.target.value); setSelectedTable(index); setTable(tables[index]); setValidated(false); setReviewed(false); setIssues([]); setPage(0); setError(""); setNotice(""); }}>{tables.map((t, index) => <option key={t.table_id} value={index}>{t.name}</option>)}</select></label>}
           {preview && <a href={preview} target="_blank" rel="noreferrer">원본 파일 열기 ↗</a>}
         </div>}
@@ -218,7 +230,8 @@ export default function Home() {
         </section>
         {targetMode === "database" && <section className="panel load-panel" aria-label="DB 적재">
           <div className="section-title"><h2><span className="section-number">04</span> 데이터베이스 적재</h2><button className="secondary" disabled={!!busy} onClick={() => void discoverLoadTarget()}>적재 대상 확인</button></div>
-          <div className="target-db-explorer"><DatabaseExplorer role="대상" data={table} canLoad={canExport} reviewed={reviewed} onBusyChange={pending => setBusy(pending ? "DB 요청 처리 중" : "")} /></div>
+          <div className="target-db-explorer"><DatabaseExplorer role="대상" data={table} onApplyMapping={applyMapping} canLoad={canExport} reviewed={reviewed} onBusyChange={pending => setBusy(pending ? "DB 요청 처리 중" : "")} /></div>
+          <details className="target-db-explorer"><summary>작업 이력</summary><JobHistory /></details>
           <details className="target-db-explorer"><summary>기존 서버 등록 MySQL 적재</summary>
           <div className="load-content"><p>서버에 등록된 MySQL 테이블에 INSERT합니다. 한 요청은 전체 성공하거나 전체 취소되며, 테이블 생성·기존 행 수정은 하지 않습니다.</p>
             {loadTargets !== null && (loadTargets.length ? <>
