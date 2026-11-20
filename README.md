@@ -185,4 +185,4 @@ scripts/     Windows 실행 보조 스크립트
 
 [DBMS별 지원 범위](docs/DATABASE_SUPPORT.md) · [이번 검증 결과](docs/TEST_RESULTS.md)
 
-상세: [개발 현황](docs/DEVELOPMENT_STATUS.md) · [API](docs/api.md) · [아키텍처](docs/architecture.md) · [요구사항](docs/requirements.md) · [멀티 DB 적재·실제 테스트](docs/jdbc-loading.md)
+**이어서 개발한다면 먼저 [인수인계 문서](docs/HANDOFF.md)** · 상세: [개발 현황](docs/DEVELOPMENT_STATUS.md) · [API](docs/api.md) · [아키텍처](docs/architecture.md) · [요구사항](docs/requirements.md) · [멀티 DB 적재·실제 테스트](docs/jdbc-loading.md)
