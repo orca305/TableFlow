@@ -1,13 +1,10 @@
-import {test, expect} from "@playwright/test";
-import {execSync} from "node:child_process";
+import { test, expect } from "@playwright/test";
+import { confirmExistingTarget, confirmSource, connectTarget, historyRows, oracle, openHistory, pg, receipts, runPanel } from "./helpers";
 
 // 실제 Oracle/PostgreSQL 테스트 컨테이너가 필요합니다(infra/jdbc/compose.yml, --profile oracle).
 // 백엔드를 TABLEFLOW_JDBC_ENABLED=true TABLEFLOW_JDBC_LOAD_ENABLED=true 로 실행하고
 // TABLEFLOW_TEST_JDBC=true 를 설정한 경우에만 실행합니다. 운영/개인 DB에는 사용하지 마세요.
 test.skip(process.env.TABLEFLOW_TEST_JDBC !== "true", "실제 DB 컨테이너 필요: TABLEFLOW_TEST_JDBC=true");
-
-const oracle = (sql: string) => execSync("docker exec -i tableflow-jdbc-tests-oracle-1 sqlplus -s tableflow/TableFlowTest2026@//localhost/FREEPDB1", {input: sql + "\nexit\n"}).toString();
-const pg = (sql: string) => execSync("docker exec -i tableflow-jdbc-tests-postgresql-1 psql -U tableflow -d tableflow -t -A", {input: sql}).toString();
 
 test.beforeAll(() => {
   oracle(`BEGIN EXECUTE IMMEDIATE 'DROP TABLE TF_UI_SRC'; EXCEPTION WHEN OTHERS THEN NULL; END;
@@ -26,103 +23,77 @@ test.afterAll(() => {
   try { pg(`DROP TABLE IF EXISTS tf_ui_dst; DROP TABLE IF EXISTS tableflow_load_receipts;`); } catch {}
 });
 
-test("real browser: Oracle → PostgreSQL migration with auto/manual mapping, dry-run, consent and replay-safe execute", async ({page}) => {
-  await page.goto("/");
-  await page.getByRole("button", {name: "DB → DB 이전", exact: true}).click();
-  const panel = page.getByLabel("DB → DB 이전", {exact: true});
-  const fill = async (side: string, port: string, db: string) => {
-    await panel.getByLabel(`${side} 포트`, {exact: true}).fill(port);
-    await panel.getByLabel(`${side} 데이터베이스명`, {exact: true}).fill(db);
-    await panel.getByLabel(`${side} 사용자`, {exact: true}).fill("tableflow");
-    await panel.getByLabel(`${side} 비밀번호`, {exact: true}).fill("TableFlowTest2026");
-    await panel.getByRole("group", {name: `${side} DB`}).getByRole("checkbox").uncheck(); // 로컬 컨테이너는 TLS 없이
-  };
-  await fill("원본", "11521", "FREEPDB1");
-  await panel.getByLabel("대상 DBMS", {exact: true}).selectOption("postgresql");
-  await fill("대상", "15432", "tableflow");
-  await panel.getByRole("button", {name: "원본 연결·스키마 조회"}).click();
-  await panel.getByLabel("원본 스키마", {exact: true}).selectOption("TABLEFLOW");
-  await panel.getByLabel("원본 테이블", {exact: true}).selectOption("TF_UI_SRC");
-  await panel.getByRole("button", {name: "대상 연결·스키마 조회"}).click();
-  await panel.getByLabel("대상 스키마", {exact: true}).selectOption("public");
-  await panel.getByLabel("대상 테이블", {exact: true}).selectOption("tf_ui_dst");
+test("real browser: Oracle → PostgreSQL 이관 with auto/manual mapping, pre-check, consent and replay-safe execute", async ({ page }) => {
+  await confirmSource(page, "TF_UI_SRC");
+  const review = await confirmExistingTarget(page, "tf_ui_dst");
   // 자동 추천: 이름이 비슷한 컬럼만 채워지고, 모호한 컬럼은 비워 둔다.
-  await expect(panel.getByLabel("EMP_NO 대상 컬럼", {exact: true})).toHaveValue("empno");
-  await expect(panel.getByLabel("HIRE_DATE 대상 컬럼", {exact: true})).toHaveValue("hiredate");
-  await expect(panel.getByLabel("EMP_NM 대상 컬럼", {exact: true})).toHaveValue("");
-  await expect(panel.getByLabel("SALARY 대상 컬럼", {exact: true})).toHaveValue("");
-  await panel.getByLabel("EMP_NM 대상 컬럼", {exact: true}).selectOption("emp_name");
-  await panel.getByLabel("SALARY 대상 컬럼", {exact: true}).selectOption("pay");
-  await panel.getByRole("button", {name: "점검 (Dry-run)"}).click();
-  await expect(panel.getByText(/원본 3행 중 3행을 이전합니다/)).toBeVisible();
-  expect(pg("SELECT count(*) FROM tf_ui_dst;").trim()).toBe("0"); // Dry-run은 쓰지 않는다.
-  const run = panel.getByRole("button", {name: "선택한 대상에 이전 실행"});
-  await expect(run).toBeDisabled(); // 동의 전에는 실행 불가
-  await panel.getByRole("checkbox", {name: /실제 DB INSERT에 동의/}).check();
-  await run.click();
-  await expect(panel.getByText("이전 완료: 3행", {exact: true})).toBeVisible();
+  await expect(review.getByLabel("EMP_NO 대상 컬럼", { exact: true })).toHaveValue("empno");
+  await expect(review.getByLabel("HIRE_DATE 대상 컬럼", { exact: true })).toHaveValue("hiredate");
+  await expect(review.getByLabel("EMP_NM 대상 컬럼", { exact: true })).toHaveValue("");
+  await expect(review.getByLabel("SALARY 대상 컬럼", { exact: true })).toHaveValue("");
+  await review.getByLabel("EMP_NM 대상 컬럼", { exact: true }).selectOption("emp_name");
+  await review.getByLabel("SALARY 대상 컬럼", { exact: true }).selectOption("pay");
+  // 컬럼별 호환성: 오류는 없고, 일시를 날짜 컬럼에 넣는 1건만 주의로 표시된다.
+  await expect(review.getByText("매핑 4건 · 경고 1건 · 오류 0건")).toBeVisible(); // 경고 1건: Oracle DATE(일시) → 날짜
+  await expect(review.getByText("원본의 샘플 200행")).toBeVisible();
+  const run = runPanel(page);
+  await run.getByRole("button", { name: "사전 점검" }).click();
+  await expect(run.getByText(/원본 3행 중 3행을 이관합니다/)).toBeVisible();
+  expect(pg("SELECT count(*) FROM tf_ui_dst;").trim()).toBe("0"); // 사전 점검은 쓰지 않는다.
+  const start = run.getByRole("button", { name: "이관 시작" });
+  await expect(start).toBeDisabled(); // 동의 전에는 실행 불가
+  await run.getByRole("checkbox", { name: /실제 DB INSERT에 동의/ }).check();
+  await start.click();
+  await expect(page.getByText("이관 완료: 3행", { exact: true })).toBeVisible();
   expect(pg("SELECT count(*) FROM tf_ui_dst;").trim()).toBe("3");
   expect(pg("SELECT emp_name||'|'||pay||'|'||hiredate FROM tf_ui_dst WHERE empno='001';").trim()).toBe("Kim O'Brien|3500000.50|2026-01-15");
-  await expect(run).toBeDisabled(); // 같은 화면에서 이중 실행 방지
+  await expect(start).toBeDisabled(); // 같은 화면에서 이중 실행 방지
 
-  // 작업 이력: 성공 기록이 화면에 나타난다.
-  const history = panel.getByLabel("작업 이력", {exact: true});
-  await expect(history.getByRole("row", {name: /DB → DB 이전.*TF_UI_SRC.*tf_ui_dst.*3.*성공/}).first()).toBeVisible(); // 이력은 실행 간에 유지된다
-  // 실제 PK 충돌(같은 데이터 재이전, 새 요청 ID)은 거부되고 실패 이력으로 남는다. 대상은 그대로 3행.
-  const conn = (db: string, port: number, dbms: string) => ({dbms, host: "localhost", port, database: db, username: "tableflow", password: "TableFlowTest2026", tls: false});
-  const body = {source: conn("FREEPDB1", 11521, "oracle"), sourceSchema: "TABLEFLOW", sourceTable: "TF_UI_SRC", target: conn("tableflow", 15432, "postgresql"),
+  // 작업 이력: 성공 기록이 화면에 나타난다(이력은 실행 간에 유지된다).
+  let history = await openHistory(page);
+  await expect(history.getByRole("row", { name: /DB 이관.*TF_UI_SRC.*tf_ui_dst.*3.*성공/ }).first()).toBeVisible();
+  // 실제 PK 충돌(같은 데이터 재이관, 새 요청 ID)은 거부되고 실패 이력으로 남는다. 대상은 그대로 3행.
+  const conn = (db: string, port: number, dbms: string) => ({ dbms, host: "localhost", port, database: db, username: "tableflow", password: "TableFlowTest2026", tls: false });
+  const body = { source: conn("FREEPDB1", 11521, "oracle"), sourceSchema: "TABLEFLOW", sourceTable: "TF_UI_SRC", target: conn("tableflow", 15432, "postgresql"),
     targetSchema: "public", targetTable: "tf_ui_dst", limit: 1000, requestId: "11111111-2222-3333-4444-555555555555", confirmed: true,
-    mappings: [["EMP_NO","empno"],["EMP_NM","emp_name"],["HIRE_DATE","hiredate"],["SALARY","pay"]].map(([source, target]) => ({source, target}))};
-  const rejected = await page.request.post("http://localhost:18080/api/v1/connections/migrate", {data: body});
+    mappings: [["EMP_NO", "empno"], ["EMP_NM", "emp_name"], ["HIRE_DATE", "hiredate"], ["SALARY", "pay"]].map(([source, target]) => ({ source, target })) };
+  const rejected = await page.request.post("http://localhost:18080/api/v1/connections/migrate", { data: body });
   expect(rejected.status()).toBe(422);
   expect(pg("SELECT count(*) FROM tf_ui_dst;").trim()).toBe("3");
   const raw = await (await page.request.get("http://localhost:18080/api/v1/connections/history?limit=10")).text();
   const items = JSON.parse(raw).items;
-  expect(items[0]).toMatchObject({kind: "migrate", status: "failed", errorCode: "LOAD_REJECTED", rows: 0});
-  expect(items[1]).toMatchObject({kind: "migrate", status: "success", rows: 3});
+  expect(items[0]).toMatchObject({ kind: "migrate", status: "failed", errorCode: "LOAD_REJECTED", rows: 0 });
+  expect(items[1]).toMatchObject({ kind: "migrate", status: "success", rows: 3 });
   expect(raw).not.toContain("TableFlowTest2026"); expect(raw).not.toContain("localhost"); expect(raw).not.toContain("Kim O'Brien");
-  await history.getByRole("button", {name: "새로고침"}).click();
-  await expect(history.getByRole("row", {name: /LOAD_REJECTED/}).first()).toBeVisible();
+  history = await openHistory(page);
+  await expect(history.getByRole("row", { name: /LOAD_REJECTED/ }).first()).toBeVisible();
 });
 
-test("real browser: create missing PostgreSQL table + receipts from Oracle definition (DDL preview, consent, no change before execute)", async ({page}) => {
+test("real browser: 대상에 없는 PostgreSQL 테이블과 영수증을 Oracle 정의로 생성 (DDL 미리보기, 동의, 실행 전 변경 없음)", async ({ page }) => {
   pg(`DROP TABLE IF EXISTS tf_ui_new; DROP TABLE IF EXISTS tableflow_load_receipts;`);
   try {
-    await page.goto("/");
-    await page.getByRole("button", {name: "DB → DB 이전", exact: true}).click();
-    const panel = page.getByLabel("DB → DB 이전", {exact: true});
-    const fill = async (side: string, port: string, db: string) => {
-      await panel.getByLabel(`${side} 포트`, {exact: true}).fill(port);
-      await panel.getByLabel(`${side} 데이터베이스명`, {exact: true}).fill(db);
-      await panel.getByLabel(`${side} 사용자`, {exact: true}).fill("tableflow");
-      await panel.getByLabel(`${side} 비밀번호`, {exact: true}).fill("TableFlowTest2026");
-      await panel.getByRole("group", {name: `${side} DB`}).getByRole("checkbox").uncheck();
-    };
-    await fill("원본", "11521", "FREEPDB1");
-    await panel.getByLabel("대상 DBMS", {exact: true}).selectOption("postgresql");
-    await fill("대상", "15432", "tableflow");
-    await panel.getByRole("button", {name: "원본 연결·스키마 조회"}).click();
-    await panel.getByLabel("원본 스키마", {exact: true}).selectOption("TABLEFLOW");
-    await panel.getByLabel("원본 테이블", {exact: true}).selectOption("TF_UI_SRC");
-    await panel.getByRole("button", {name: "대상 연결·스키마 조회"}).click();
-    await panel.getByLabel("대상 스키마", {exact: true}).selectOption("public");
-    await panel.getByRole("checkbox", {name: /새 테이블 만들기/}).check();
-    await panel.getByLabel("대상 새 테이블 이름", {exact: true}).fill("tf_ui_new");
+    await confirmSource(page, "TF_UI_SRC");
+    const dst = await connectTarget(page);
+    await dst.getByLabel("신규 테이블 이름").fill("tf_ui_new");
+    await dst.getByRole("button", { name: "대상 확정", exact: true }).click();
+    const review = page.getByRole("region", { name: "검토" });
     // 대상 컬럼 이름 기본값: PostgreSQL 관례(소문자), 직접 수정 가능
-    await expect(panel.getByLabel("EMP_NO 대상 컬럼", {exact: true})).toHaveValue("emp_no");
-    await panel.getByLabel("SALARY 대상 컬럼", {exact: true}).fill("pay");
-    await panel.getByRole("button", {name: "점검 (Dry-run)"}).click();
-    await expect(panel.getByText(/표시된 CREATE TABLE 실행과 DB INSERT에 동의합니다/)).toBeVisible();
-    const ddl = await panel.locator("pre.ddl-preview").allTextContents();
+    await expect(review.getByLabel("EMP_NO 대상 컬럼", { exact: true })).toHaveValue("emp_no");
+    await review.getByLabel("SALARY 대상 컬럼", { exact: true }).fill("pay");
+    await expect.poll(async () => (await review.locator("pre.ddl-preview").allTextContents()).join("\n")).toContain('"pay" NUMERIC(20,2) NOT NULL');
+    const ddl = await review.locator("pre.ddl-preview").allTextContents();
     expect(ddl).toHaveLength(2);
-    expect(ddl[0]).toContain('CREATE TABLE "public"."tf_ui_new"'); expect(ddl[0]).toContain('"pay" NUMERIC(20,2) NOT NULL'); expect(ddl[0]).toContain('PRIMARY KEY ("emp_no")');
+    expect(ddl[0]).toContain('CREATE TABLE "public"."tf_ui_new"'); expect(ddl[0]).toContain('PRIMARY KEY ("emp_no")');
     expect(ddl[1]).toContain("tableflow_load_receipts");
-    expect(pg("SELECT count(*) FROM pg_tables WHERE tablename IN ('tf_ui_new','tableflow_load_receipts');").trim()).toBe("0"); // Dry-run은 만들지 않는다.
-    const run = panel.getByRole("button", {name: "선택한 대상에 이전 실행"});
-    await expect(run).toBeDisabled();
-    await panel.getByRole("checkbox", {name: /DB INSERT에 동의/}).check();
-    await run.click();
-    await expect(panel.getByText("이전 완료: 3행", {exact: true})).toBeVisible();
+    const run = runPanel(page);
+    await run.getByRole("button", { name: "사전 점검" }).click();
+    await expect(run.getByText(/표시된 CREATE TABLE 실행과 DB INSERT에 동의합니다/)).toBeVisible();
+    expect(pg("SELECT count(*) FROM pg_tables WHERE tablename IN ('tf_ui_new','tableflow_load_receipts');").trim()).toBe("0"); // 사전 점검은 만들지 않는다.
+    const start = run.getByRole("button", { name: "이관 시작" });
+    await expect(start).toBeDisabled();
+    await run.getByRole("checkbox", { name: /DB INSERT에 동의/ }).check();
+    await start.click();
+    await expect(page.getByText("이관 완료: 3행", { exact: true })).toBeVisible();
     expect(pg("SELECT count(*) FROM tf_ui_new;").trim()).toBe("3");
     expect(pg("SELECT string_agg(column_name||':'||data_type, ',' ORDER BY ordinal_position) FROM information_schema.columns WHERE table_name='tf_ui_new';").trim())
       .toBe("emp_no:character varying,emp_nm:character varying,hire_date:timestamp without time zone,pay:numeric");
@@ -133,30 +104,35 @@ test("real browser: create missing PostgreSQL table + receipts from Oracle defin
   }
 });
 
-async function openMigration(page: import("@playwright/test").Page, srcTable: string) {
-  await page.goto("/");
-  await page.getByRole("button", {name: "DB → DB 이전", exact: true}).click();
-  const panel = page.getByLabel("DB → DB 이전", {exact: true});
-  const fill = async (side: string, port: string, db: string) => {
-    await panel.getByLabel(`${side} 포트`, {exact: true}).fill(port);
-    await panel.getByLabel(`${side} 데이터베이스명`, {exact: true}).fill(db);
-    await panel.getByLabel(`${side} 사용자`, {exact: true}).fill("tableflow");
-    await panel.getByLabel(`${side} 비밀번호`, {exact: true}).fill("TableFlowTest2026");
-    await panel.getByRole("group", {name: `${side} DB`}).getByRole("checkbox").uncheck();
-  };
-  await fill("원본", "11521", "FREEPDB1");
-  await panel.getByLabel("대상 DBMS", {exact: true}).selectOption("postgresql");
-  await fill("대상", "15432", "tableflow");
-  await panel.getByRole("button", {name: "원본 연결·스키마 조회"}).click();
-  await panel.getByLabel("원본 스키마", {exact: true}).selectOption("TABLEFLOW");
-  await panel.getByLabel("원본 테이블", {exact: true}).selectOption(srcTable);
-  await panel.getByRole("button", {name: "대상 연결·스키마 조회"}).click();
-  await panel.getByLabel("대상 스키마", {exact: true}).selectOption("public");
-  return panel;
-}
-const receipts = `CREATE TABLE IF NOT EXISTS tableflow_load_receipts (request_id varchar(36) PRIMARY KEY, payload_hash varchar(64) NOT NULL, table_name varchar(128) NOT NULL, inserted_rows integer NOT NULL);`;
+test("real browser: 타입·길이가 맞지 않는 컬럼은 이관 전에 오류로 표시되고 이관을 막는다", async ({ page }) => {
+  oracle(`BEGIN EXECUTE IMMEDIATE 'DROP TABLE TF_UI_LEN'; EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+CREATE TABLE TF_UI_LEN (ID NUMBER(10) PRIMARY KEY, NAME VARCHAR2(100), CODE VARCHAR2(100), NOTE VARCHAR2(50));
+INSERT INTO TF_UI_LEN VALUES (1,'짧은 이름','A1','메모');
+INSERT INTO TF_UI_LEN VALUES (2,'${"가".repeat(30)}','B2','메모');
+COMMIT;`);
+  pg(`DROP TABLE IF EXISTS tf_ui_len; ${receipts}
+CREATE TABLE tf_ui_len (id integer PRIMARY KEY, name varchar(20), code varchar(20), note integer);`);
+  try {
+    await confirmSource(page, "TF_UI_LEN");
+    const review = await confirmExistingTarget(page, "tf_ui_len");
+    await expect(review.getByText(/원본 값 중 최대 30자로, 대상 한도\(20자\)를 넘는 값이 1건/).first()).toBeVisible(); // 실제 데이터의 최대 길이까지 확인
+    await expect(review.getByText(/실제 값은 모두 대상 한도\(20자\) 이하/).first()).toBeVisible();       // 길이는 크지만 값은 모두 한도 이하
+    await review.getByLabel("NOTE 대상 컬럼", { exact: true }).selectOption("note");
+    await expect(review.getByText(/문자열 값을 int4 컬럼에 넣을 수 없습니다/).first()).toBeVisible();
+    await expect(review.getByText(/오류 2건 — 오류를 해결해야 이관할 수 있습니다/)).toBeVisible();
+    await expect(runPanel(page).getByRole("button", { name: "이관 시작" })).toBeDisabled();
+    await review.getByLabel("NOTE 대상 컬럼", { exact: true }).selectOption("");
+    await review.getByLabel("NAME 대상 컬럼", { exact: true }).selectOption("");
+    await expect(review.getByText(/오류 0건/)).toBeVisible();
+    expect(pg("SELECT count(*) FROM tf_ui_len;").trim()).toBe("0"); // 분석은 아무것도 쓰지 않는다
+  } finally {
+    try { oracle(`DROP TABLE TF_UI_LEN;`); } catch {}
+    try { pg(`DROP TABLE IF EXISTS tf_ui_len;`); } catch {}
+  }
+});
 
-test("real browser: 12,500-row Oracle → PostgreSQL chunked migration with progress (background job, 3 chunks)", async ({page}) => {
+test("real browser: 12,500-row Oracle → PostgreSQL 분할 이관과 진행 현황 (백그라운드 작업, 분할 단위 5,000행 × 3회)", async ({ page }) => {
   oracle(`BEGIN EXECUTE IMMEDIATE 'DROP TABLE TF_UI_BIG'; EXCEPTION WHEN OTHERS THEN NULL; END;
 /
 CREATE TABLE TF_UI_BIG (ID NUMBER(10) PRIMARY KEY, NAME VARCHAR2(30), AMT NUMBER(12,2));
@@ -165,35 +141,40 @@ COMMIT;`);
   pg(`DROP TABLE IF EXISTS tf_ui_big; ${receipts}
 CREATE TABLE tf_ui_big (id integer PRIMARY KEY, name varchar(30), amt numeric(12,2));`);
   try {
-    const panel = await openMigration(page, "TF_UI_BIG");
-    await panel.getByLabel("대상 테이블", {exact: true}).selectOption("tf_ui_big");
-    await expect(panel.getByLabel("ID 대상 컬럼", {exact: true})).toHaveValue("id");
-    // 한도 10,000 이하에서는 일부만 이전하지 않고 거부한다.
-    await panel.getByLabel("최대 이전 행 수", {exact: true}).fill("5000");
-    await panel.getByRole("button", {name: "점검 (Dry-run)"}).click();
-    await expect(page.getByRole("alert").filter({hasText: /일부만 이전하는 것을 막았습니다/})).toBeVisible();
-    // 한도를 올리면 대용량(청크) 점검: 전체 행 수·청크 수, 표본만 대조한다는 경고
-    await panel.getByLabel("최대 이전 행 수", {exact: true}).fill("20000");
-    await panel.getByRole("button", {name: "점검 (Dry-run)"}).click();
-    await expect(panel.getByText(/원본 12[,.]?500행 중 12[,.]?500행을 이전합니다/)).toBeVisible();
-    await expect(panel.getByText(/대용량: 3개 청크/)).toBeVisible();
-    await expect(panel.getByText(/처음 200행만 대상 스키마와 대조/)).toBeVisible();
+    await confirmSource(page, "TF_UI_BIG");
+    const dst = await connectTarget(page);
+    await dst.getByRole("radio", { name: "기존 테이블에 적재" }).check();
+    await dst.getByLabel("대상 테이블", { exact: true }).selectOption("tf_ui_big");
+    // 분할 단위 설정: 범위를 벗어나면 막고, 5,000행이면 3회로 나눈다.
+    await dst.getByLabel("분할 단위(행)", { exact: true }).fill("50");
+    await expect(dst.getByText("분할 단위는 100~10,000행 사이로 입력하세요")).toBeVisible();
+    await expect(dst.getByRole("button", { name: "대상 확정", exact: true })).toBeDisabled();
+    await dst.getByRole("button", { name: "5,000" }).click();
+    await expect(dst.getByText("총 12,500행 ÷ 5,000행 = 3회 분할 (마지막 회 2,500행)")).toBeVisible();
+    await dst.getByRole("button", { name: "대상 확정", exact: true }).click();
+    const review = page.getByRole("region", { name: "검토" });
+    await expect(review.getByLabel("ID 대상 컬럼", { exact: true })).toHaveValue("id");
+    const run = runPanel(page);
+    await run.getByRole("button", { name: "사전 점검" }).click();
+    await expect(run.getByText(/원본 12[,.]?500행 중 12[,.]?500행을 이관합니다/)).toBeVisible();
+    await expect(run.getByText(/대용량: 3회 분할 × 최대 5,000행/)).toBeVisible();
+    await expect(run.getByText(/처음 200행만 대상 스키마와 대조/)).toBeVisible();
     expect(pg("SELECT count(*) FROM tf_ui_big;").trim()).toBe("0");
-    await panel.getByRole("checkbox", {name: /DB INSERT에 동의/}).check();
-    await panel.getByRole("button", {name: "선택한 대상에 이전 실행"}).click();
-    await expect(panel.getByLabel("이전 진행률", {exact: true})).toBeVisible();
-    await expect(panel.getByText("이전 완료: 12,500행", {exact: true})).toBeVisible({timeout: 60_000});
-    await expect(panel.getByLabel("이전 진행률", {exact: true}).getByText(/완료 · 12[,.]?500 \/ 12[,.]?500행 · 청크 3 \/ 3/)).toBeVisible();
+    await run.getByRole("checkbox", { name: /DB INSERT에 동의/ }).check();
+    await run.getByRole("button", { name: "이관 시작" }).click();
+    await expect(run.getByRole("status", { name: "이관 진행 현황" })).toBeVisible();
+    await expect(page.getByText("이관 완료: 12,500행", { exact: true })).toBeVisible({ timeout: 60_000 });
+    await expect(run.getByRole("status", { name: "이관 진행 현황" }).getByText(/완료 · 12[,.]?500 \/ 12[,.]?500행 · 3 \/ 3회 완료/)).toBeVisible();
     expect(pg("SELECT count(*)||'|'||count(DISTINCT id)||'|'||sum(id)||'|'||max(amt) FROM tf_ui_big;").trim()).toBe("12500|12500|78131250|12500.25");
-    await expect(panel.getByLabel("작업 이력", {exact: true}).getByRole("row", {name: /TF_UI_BIG.*tf_ui_big.*12[,.]?500.*성공/}).first()).toBeVisible();
-    await expect(panel.getByRole("button", {name: "선택한 대상에 이전 실행"})).toBeDisabled();
+    const history = await openHistory(page);
+    await expect(history.getByRole("row", { name: /TF_UI_BIG.*tf_ui_big.*12[,.]?500.*성공/ }).first()).toBeVisible();
   } finally {
     try { oracle(`DROP TABLE TF_UI_BIG;`); } catch {}
     try { pg(`DROP TABLE IF EXISTS tf_ui_big;`); } catch {}
   }
 });
 
-test("real browser: preserve Oracle keys into PostgreSQL identity column and resync the sequence", async ({page}) => {
+test("real browser: Oracle 기본 키를 PostgreSQL 자동 증가 컬럼에 유지하고 시퀀스를 다시 맞춘다", async ({ page }) => {
   oracle(`BEGIN EXECUTE IMMEDIATE 'DROP TABLE TF_UI_KEY'; EXCEPTION WHEN OTHERS THEN NULL; END;
 /
 CREATE TABLE TF_UI_KEY (ID NUMBER(10) PRIMARY KEY, NAME VARCHAR2(30));
@@ -204,18 +185,20 @@ COMMIT;`);
   pg(`DROP TABLE IF EXISTS tf_ui_key; ${receipts}
 CREATE TABLE tf_ui_key (id integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, name varchar(30));`);
   try {
-    const panel = await openMigration(page, "TF_UI_KEY");
-    await panel.getByLabel("대상 테이블", {exact: true}).selectOption("tf_ui_key");
+    await confirmSource(page, "TF_UI_KEY");
+    const review = await confirmExistingTarget(page, "tf_ui_key");
     // 옵션 없이는 자동 증가 컬럼에 원본 값을 넣을 수 없다 → 옵션 안내와 함께 거부
-    await panel.getByRole("button", {name: "점검 (Dry-run)"}).click();
-    await expect(page.getByRole("alert").filter({hasText: /원본 키 값 보존/})).toBeVisible();
-    await panel.getByRole("checkbox", {name: "자동 증가 컬럼에 원본 키 값 보존"}).check();
-    await panel.getByRole("button", {name: "점검 (Dry-run)"}).click();
-    await expect(panel.getByText(/자동 증가 컬럼 id에 원본 값을 그대로 넣고/)).toBeVisible();
-    await panel.getByRole("checkbox", {name: /DB INSERT에 동의/}).check();
-    await panel.getByRole("button", {name: "선택한 대상에 이전 실행"}).click();
-    await expect(panel.getByText("이전 완료: 3행", {exact: true})).toBeVisible();
-    await expect(panel.getByText(/시퀀스 재동기화: id → 다음 값 31/)).toBeVisible();
+    await expect(review.getByRole("alert").filter({ hasText: /원본 키 값 보존/ })).toBeVisible();
+    await page.getByRole("button", { name: /^2 · 대상/ }).click();
+    await page.getByRole("checkbox", { name: "원본 기본 키(PK) 유지" }).check();
+    await page.getByRole("region", { name: "대상 선택" }).getByRole("button", { name: "대상 확정", exact: true }).click();
+    const run = runPanel(page);
+    await run.getByRole("button", { name: "사전 점검" }).click();
+    await expect(run.getByText(/자동 증가 컬럼 id에 원본 값을 그대로 넣고/)).toBeVisible();
+    await run.getByRole("checkbox", { name: /DB INSERT에 동의/ }).check();
+    await run.getByRole("button", { name: "이관 시작" }).click();
+    await expect(page.getByText("이관 완료: 3행", { exact: true })).toBeVisible();
+    await expect(page.getByText(/시퀀스 재동기화: id → 다음 값 31/)).toBeVisible();
     expect(pg("SELECT sum(id) FROM tf_ui_key;").trim()).toBe("60"); // 원본 키 값 그대로
     pg("INSERT INTO tf_ui_key (name) VALUES ('new');");
     expect(pg("SELECT id FROM tf_ui_key WHERE name='new';").trim()).toBe("31"); // 다음 번호는 최댓값 다음
@@ -223,4 +206,34 @@ CREATE TABLE tf_ui_key (id integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     try { oracle(`DROP TABLE TF_UI_KEY;`); } catch {}
     try { pg(`DROP TABLE IF EXISTS tf_ui_key;`); } catch {}
   }
+});
+
+test("real browser: 비밀번호 저장 — 저장하면 입력 없이 연결되고, 저장 파일에 평문이 없으며, 삭제하면 사라진다", async ({ page }) => {
+  await page.goto("/");
+  const src = page.getByRole("region", { name: "원본 선택" });
+  await src.getByLabel("원본 연결", { exact: true }).selectOption("new");
+  await src.getByLabel("원본 종류", { exact: true }).selectOption("oracle");
+  await src.getByLabel("원본 포트", { exact: true }).fill("11521");
+  await src.getByLabel("원본 데이터베이스", { exact: true }).fill("FREEPDB1");
+  await src.getByLabel("원본 사용자", { exact: true }).fill("tableflow");
+  await src.getByLabel("원본 비밀번호", { exact: true }).fill("TableFlowTest2026");
+  await src.getByLabel("원본 연결 이름").fill("UI 테스트 Oracle");
+  await src.getByRole("checkbox", { name: "비밀번호 저장" }).check();
+  await src.getByRole("button", { name: "연결 확인", exact: true }).click();
+  await expect(src.getByRole("status", { name: "원본 연결 상태" })).toContainText("연결 성공");
+  // 서버가 돌려주는 목록에는 비밀번호가 없고 저장 여부만 있다.
+  const list = await (await page.request.get("http://localhost:18080/api/v1/connections/saved")).text();
+  expect(list).not.toContain("TableFlowTest2026"); expect(list).toContain('"passwordSaved":true');
+  // 새로 열어도 입력 없이 저장된 비밀번호로 연결된다.
+  await page.reload();
+  const again = page.getByRole("region", { name: "원본 선택" });
+  await again.getByLabel("원본 연결", { exact: true }).selectOption({ label: "UI 테스트 Oracle" });
+  await expect(again.getByRole("status", { name: "원본 연결 상태" })).toContainText("연결 성공");
+  await expect(again.getByLabel("원본 비밀번호", { exact: true })).toHaveValue("");
+  // 브라우저 저장소에도 비밀번호가 없다.
+  expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toContain("TableFlowTest2026");
+  // 삭제
+  await again.getByRole("button", { name: "연결 삭제" }).click();
+  await again.getByRole("button", { name: "삭제 확인" }).click();
+  await expect.poll(async () => (await (await page.request.get("http://localhost:18080/api/v1/connections/saved")).text())).not.toContain("UI 테스트 Oracle");
 });
