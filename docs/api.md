@@ -110,3 +110,24 @@ Credentials: `{dbms:oracle|postgresql|mysql|mariadb,host,port,database,username,
 | GET | `/connections/history?limit=50` | 없음 | `{enabled,items:[{id,kind:load\|migrate,requestId,startedAt,durationMs,status:success\|replayed\|failed,source,target,rows,errorCode,message}]}` 최신순, 최대 200건 |
 
 작업 이력에는 비밀번호·호스트·사용자명·행 데이터가 포함되지 않습니다. 대상 자동 증가 컬럼에 값을 넣는 매핑은 400(`INVALID_INPUT`)입니다.
+
+## 2026-11-20 추가: 저장된 연결 · 분석 · 분할 단위
+
+모든 `/connections/*` 요청은 기존처럼 로컬 요청·Origin 검사를 거치며, CORS는 GET/POST/DELETE를 허용한다.
+
+| 메서드·경로 | 설명 |
+|---|---|
+| `GET /connections/drivers` | 기존 필드 + `savedEnabled`, `savePasswordEnabled`, `defaultChunkSize` |
+| `GET /connections/saved` | 저장된 연결 목록. **비밀번호는 포함하지 않고** `passwordSaved`만 알린다 |
+| `POST /connections/saved` | `{name, connection, savePassword}` — 연결 저장·갱신. `savePassword=true`일 때만 비밀번호를 AES-256-GCM으로 암호화해 서버 로컬 파일에 보관(비워 보내면 기존 비밀번호 유지) |
+| `DELETE /connections/saved/{id}` | 저장된 연결 삭제 |
+| `POST /connections/count` | `{connection, schema, table}` → `{rows}` 전체 행 수(읽기 전용) |
+| `POST /connections/migrate/analyze` | `MigrateRequest` → `{sourceRows, maxRows, columns[{source,target,sourceType,targetType,conversion,level,detail}], notes, warnings, createsTable, ddl}`. 값은 검증하지 않고 컬럼 호환성만 판정. `level`은 ok/info/warn/error. 길이 위험이 있는 문자열 컬럼은 원본의 실제 최대 길이도 조회 |
+| `POST /connections/migrate/check`·`/migrate`·`/migrate/jobs` | 요청에 선택 필드 `chunkSize`(100~10,000) 추가. 생략하면 서버 기본값 |
+| `POST /connections/load/check`·`/load` | 요청에 `createTable`(기본 false) 추가. true면 대상에 없는 테이블을 변환한 표의 컬럼 정의로 생성(`createsTable`, `ddl`, `warnings` 응답). 이미 있으면 점검에서 거부, 적재 재시도에서는 건너뜀 |
+
+`Credentials`(모든 접속 요청)에 선택 필드 `savedId`가 생겼다. `password`를 비우고 `savedId`를 보내면 서버가 저장된 비밀번호를 복호화해 쓰며, 주소·포트·DB·사용자·TLS가 저장된 연결과 다르면 거부한다(`CONNECTION_MISMATCH`).
+
+### 추가 (신규 테이블의 대상 타입 지정 · FK 표시)
+- `mappings[]` 항목에 선택 필드 `type`(string/integer/decimal/date/datetime/bool), `size`(문자열 길이 또는 숫자 정밀도), `scale`을 보낼 수 있다. **신규 테이블 생성(`createTable=true`)일 때만** 쓰이며, 생략하면 원본 정의를 따른다. 지정한 컬럼은 그 정의로 값을 검증하고, `/migrate/analyze`가 원본과 비교한 `level`/`detail`(길이 부족·형식 변환 위험 등)을 돌려준다.
+- `/connections/columns`의 컬럼 정보에 `foreignKey`(외래 키 여부)가 추가되었다.

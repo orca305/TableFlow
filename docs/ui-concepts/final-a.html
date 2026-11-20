@@ -1,0 +1,428 @@
+<title>TableFlow 화면 전체</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* 레이아웃: 상단 메뉴 + 흐름도 중심 본문. 라이트/다크/자동 전환. 포인트는 라임 하나. */
+:root{--bg:#f3f4f7;--panel:#fff;--panel2:#f7f8fa;--line:#dde0e7;--fg:#14171e;--mut:#626a78;--acc:#86a9f5;--acct:#3a69d8;--onacc:#0e2250;--logo1:#2c56c4;--logo2:#86a9f5;--ok:#2f7d3a;--okbg:#e2f4e5;--bad:#b3261e;--badbg:#fde8e6;--warn:#8a5a00;--warnbg:#fff1d6;--font:"Pretendard","Noto Sans KR","Malgun Gothic",system-ui,sans-serif;--mono:"JetBrains Mono",Consolas,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14161b;--panel:#1c1f26;--panel2:#20242c;--line:#2b303a;--fg:#e7e9ee;--mut:#8f95a3;--acc:#c6f24e;--onacc:#14161b;--logo1:#c6f24e;--logo2:#7d8596;--acct:#c6f24e;--ok:#7ddf8c;--okbg:#18301e;--bad:#ff8f86;--badbg:#3a1c1a;--warn:#ffcb6b;--warnbg:#38290f;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#14161b;--panel:#1c1f26;--panel2:#20242c;--line:#2b303a;--fg:#e7e9ee;--mut:#8f95a3;--acc:#c6f24e;--onacc:#14161b;--logo1:#c6f24e;--logo2:#7d8596;--acct:#c6f24e;--ok:#7ddf8c;--okbg:#18301e;--bad:#ff8f86;--badbg:#3a1c1a;--warn:#ffcb6b;--warnbg:#38290f;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 var(--font)}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:30;background:var(--panel)}
+.gut{padding-left:max(20px,env(safe-area-inset-left,0px));padding-right:max(20px,env(safe-area-inset-right,0px))}
+header{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--panel);border-bottom:1px solid var(--line)}
+.hd{display:flex;align-items:center;gap:18px;padding-block:10px;flex-wrap:wrap}
+.logo{font-weight:800;font-size:17px;letter-spacing:-.02em;display:flex;align-items:center;gap:8px}
+.logo i{width:22px;height:22px;border-radius:6px;background:var(--acc);display:inline-block}
+nav{display:flex;gap:2px;flex-wrap:wrap}
+nav button{font:inherit;background:none;border:0;color:var(--mut);padding:8px 12px;border-radius:8px;cursor:pointer}
+nav button:hover{background:var(--panel2);color:var(--fg)}
+nav button[aria-current="page"]{background:var(--panel2);color:var(--fg);font-weight:600;box-shadow:inset 0 -2px 0 var(--acc)}
+.theme{margin-left:auto;display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.theme button{font:inherit;background:none;border:0;color:var(--mut);padding:6px 11px;cursor:pointer}
+.theme button[aria-pressed="true"]{background:var(--fg);color:var(--bg)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--acct);outline-offset:2px}
+main{max-width:1180px;margin:0 auto;padding-block:26px 48px}
+h1{font-size:24px;margin:0 0 4px;letter-spacing:-.02em}
+.sub{color:var(--mut);margin:0 0 22px}
+.grid{display:grid;gap:16px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+.panel h2{margin:0 0 12px;font-size:12px;font-weight:600;color:var(--mut);letter-spacing:.04em}
+.pill{display:inline-block;padding:2px 10px;border-radius:99px;font-size:12px;background:var(--panel2);color:var(--mut)}
+.pill.ok{background:var(--okbg);color:var(--ok)}.pill.bad{background:var(--badbg);color:var(--bad)}.pill.warn{background:var(--warnbg);color:var(--warn)}.pill.run{background:var(--panel2);color:var(--acct)}
+.btn{font:inherit;font-weight:600;border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:9px 16px;border-radius:8px;cursor:pointer}
+.btn.p{background:var(--acc);border-color:var(--acc);color:var(--onacc)}
+.btn.sm{padding:5px 10px;font-weight:500;font-size:13px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.wrap-x{overflow-x:auto}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:left;padding:9px 12px;border-top:1px solid var(--line);white-space:nowrap}
+th{font-weight:500;font-size:12px;color:var(--mut);border-top:0}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.flow{display:grid;grid-template-columns:1fr 36px 1fr 36px 1fr;align-items:stretch}
+.node{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;display:grid;gap:6px;align-content:start}
+button.node{font:inherit;color:inherit;text-align:left;width:100%;cursor:pointer}
+button.node:hover{border-color:var(--mut)}
+button.node[aria-pressed="true"]{border-color:var(--acct);box-shadow:0 0 0 1px var(--acct)}
+.node .edit{color:var(--acct);font-size:12px;font-weight:600}
+.q{display:inline-grid;place-items:center;width:16px;height:16px;border-radius:50%;border:1px solid var(--mut);color:var(--mut);font-size:11px;font-weight:600;margin-left:6px;cursor:help;vertical-align:1px;line-height:1}
+.q:hover,.q:focus-visible{color:var(--fg);border-color:var(--fg)}
+#tip{position:fixed;left:0;top:0;z-index:50;display:none;width:max-content;max-width:min(300px,calc(100vw - 16px));background:var(--fg);color:var(--bg);padding:8px 12px;border-radius:8px;font-size:12.5px;line-height:1.55;pointer-events:none;overflow-wrap:break-word}
+.hs{font-weight:400;color:var(--mut);font-size:13px;margin-left:10px;letter-spacing:0}
+.logo svg{display:block}
+.theme button{display:grid;place-items:center;padding:7px 10px}
+.guide{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin-bottom:16px}
+.guide summary{cursor:pointer;font-weight:600}
+.gs{list-style:none;margin:14px 0 0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.gs li{background:var(--panel2);border-radius:10px;padding:12px 14px;display:grid;gap:6px;font-size:13px;color:var(--mut);align-content:start}
+.gs b{color:var(--fg);display:flex;align-items:center;gap:8px;font-size:14px}
+.gs i{font-style:normal;width:22px;height:22px;border-radius:50%;background:var(--acc);color:var(--onacc);display:inline-grid;place-items:center;font-size:12px;font-weight:700}
+.next{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--acct);border-radius:0 10px 10px 0;padding:10px 14px}
+.next b{color:var(--acct);font-size:13px}
+.hint{display:none}
+.mapsum{margin:10px 0 0;font-size:13px;color:var(--mut)}
+.mapt td small{display:block;color:var(--mut);font-size:12px}
+.mapt td.st{white-space:normal;min-width:220px}
+.mapt td.st small{display:block;margin-top:2px}
+.opts{display:grid;grid-template-columns:max-content minmax(0,340px);gap:12px 24px;align-items:center;margin:4px 0 18px}
+.opts input[type=text],.opts select{height:40px}
+.opts :disabled{opacity:.5;cursor:not-allowed}
+.ol{display:flex;align-items:center;gap:8px;min-height:40px}
+.ol label{cursor:pointer;color:var(--fg);font-size:14px}
+.ol .q{margin-left:0}
+.ol.span{grid-column:1/-1;min-height:0}
+.split{border-top:1px solid var(--line);padding-top:16px;margin:0 0 16px;display:grid;gap:12px}
+.sp-h{font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px}
+.sp-h .q{margin-left:0}
+.split .row{align-items:flex-end}
+.split input[type=text]{height:40px}
+.pre{font:inherit;border:1px solid var(--line);background:var(--panel2);color:var(--fg);border-radius:99px;padding:8px 14px;cursor:pointer;font-size:13px}
+.pre[aria-pressed="true"]{border-color:var(--acct);color:var(--acct);font-weight:600}
+.mapsum.bad{color:var(--bad)}
+@media(max-width:640px){.opts{grid-template-columns:1fr}}
+.cd{background:var(--panel2);border-radius:10px;padding:14px;margin:6px 0 16px;display:grid;gap:12px}
+.cd-h{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.cd input[type=text],.cd input[type=password],.cd select{background:var(--panel)}
+.row.end{align-items:flex-end}
+.row.end .btn,.row.end select{height:40px}
+.row.end select{min-width:200px}
+.pager{display:flex;justify-content:space-between;align-items:center;gap:10px 16px;flex-wrap:wrap;padding-top:12px;color:var(--mut);font-size:13px}
+.pager .ctl{display:flex;gap:8px;align-items:center}
+.pager select{width:auto;padding:5px 8px}
+.pager .btn{padding:5px 12px;font-weight:500}
+.pager .btn:disabled{opacity:.45;cursor:not-allowed}
+
+.pk h2{color:var(--fg);font-size:15px;letter-spacing:0}
+.opt{display:flex;gap:8px;align-items:center;font-size:13px;margin:6px 0}
+input[type=text].inl{max-width:240px}
+.pk .form{margin-bottom:14px}
+.form.form3{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media(max-width:640px){.form.form3{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.mapt select{padding:5px 8px;min-width:150px}
+.node small{color:var(--mut);font-size:12px}
+.node h3{margin:0;font-size:16px}
+.link{align-self:center;height:2px;background:var(--acct);position:relative}
+.link::after{content:"";position:absolute;right:-1px;top:-4px;border-left:7px solid var(--acct);border-top:5px solid transparent;border-bottom:5px solid transparent}
+.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{background:var(--panel2);border-radius:6px;padding:2px 8px;font-size:12px;color:var(--mut)}
+.prog{height:8px;background:var(--panel2);border-radius:4px;overflow:hidden}.prog i{display:block;height:100%;background:var(--acc)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.stat{background:var(--panel2);border-radius:10px;padding:12px 14px}.stat b{display:block;font-size:22px;font-variant-numeric:tabular-nums}.stat span{color:var(--mut);font-size:12px}
+.drop{border:2px dashed var(--line);border-radius:12px;padding:34px;text-align:center;color:var(--mut)}
+.drop b{display:block;color:var(--fg);font-size:16px;margin-bottom:4px}
+label.f{display:block;font-size:12px;color:var(--mut)}
+label.f>input,label.f>select{display:block;margin-top:5px}
+input[type=text],input[type=password],select{font:inherit;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+.conn{display:grid;gap:6px}
+.conn b{font-size:15px}
+.sw{display:flex;justify-content:space-between;gap:16px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}
+.sw:first-of-type{border-top:0}
+.sw p{margin:0;color:var(--mut);font-size:13px}
+.tg{width:42px;height:24px;border-radius:12px;background:var(--line);position:relative;flex:none;border:0;cursor:pointer}
+.tg::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:var(--fg);transition:left .15s}
+.tg[aria-checked="true"]{background:var(--acc)}.tg[aria-checked="true"]::after{left:21px;background:var(--onacc)}
+.two{display:grid;grid-template-columns:2fr 1fr;gap:16px}
+.cols3{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+@media(max-width:820px){.flow{grid-template-columns:1fr}.link{width:2px;height:22px;justify-self:center}.link::after{display:none}.two{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){.tg::after{transition:none}}
+</style>
+
+<header><div class="hd gut">
+  <div class="logo"><svg class="mark" viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"><rect x="3" y="5" width="18" height="6" rx="3" fill="var(--logo2)"/><rect x="7" y="13" width="18" height="6" rx="3" fill="var(--logo1)"/><rect x="11" y="21" width="18" height="6" rx="3" fill="var(--logo2)"/></svg>TableFlow</div>
+  <nav aria-label="메뉴" id="nav">
+    <button data-p="new" aria-current="page" data-tip="원본 DB의 데이터를 대상 DB로 이관합니다.">DB 이관</button>
+    <button data-p="file" data-tip="CSV, Excel, PDF, 이미지를 표로 변환해 SQL, Excel, CSV로 출력합니다.">파일 변환</button>
+    <button data-p="hist" data-tip="수행한 작업을 조회하고 중단된 작업을 재개합니다.">작업 이력</button>
+    <button data-p="set" data-tip="DB 조회·적재 기능과 분할 이관 단위를 설정합니다.">설정</button>
+  </nav>
+  <div class="theme" role="group" aria-label="화면 모드"><button data-t="light" aria-pressed="false" aria-label="라이트 모드" data-tip="라이트 모드"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button><button data-t="dark" aria-pressed="false" aria-label="다크 모드" data-tip="다크 모드"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button></div>
+</div></header>
+
+<main class="gut">
+
+<section id="p-new">
+  <h1>DB 이관</h1><p class="sub">원본과 대상을 선택하고, 매핑과 검증을 마치면 이관할 수 있습니다.</p>
+  <details class="guide" open><summary>처음이신가요? 사용 방법</summary>
+    <ol class="gs">
+      <li><b><i>1</i>원본 선택</b>첫 번째 카드를 눌러 이관할 DB와 테이블을 선택한 뒤 '원본 확정'을 누릅니다. 연결 목록에 없으면 '신규 연결'를 선택하세요.</li>
+      <li><b><i>2</i>대상 선택</b>두 번째 카드를 눌러 데이터를 넣을 DB를 선택합니다. 신규 테이블을 생성하거나 기존 테이블에 적재할 수 있습니다.</li>
+      <li><b><i>3</i>검토</b>세 번째 카드에서 컬럼 매핑을 확인하고 검증 오류를 모두 해결합니다. 오류가 남아 있으면 이관할 수 없습니다.</li>
+      <li><b><i>4</i>이관</b>'사전 점검'으로 결과를 미리 확인한 뒤 '이관 시작'을 누릅니다. 중단되어도 '재개'로 이어서 진행할 수 있습니다.</li>
+    </ol>
+    <p style="margin:12px 0 0;color:var(--mut);font-size:13px">원본이 파일(CSV, Excel, PDF, 이미지)이면 위쪽 '파일 변환' 메뉴에서 변환하고 DB에 적재할 수 있습니다.</p>
+  </details>
+  <div class="grid">
+    <div class="next" role="status"><b>다음 할 일</b><span id="next-t"></span></div>
+    <div class="flow">
+      <button class="node" data-n="src" data-tip="이관할 데이터가 있는 DB와 테이블을 선택합니다." aria-pressed="true"><small>1 · 원본 <span class="edit">선택</span></small><h3 id="n-src">Oracle · HR.EMP</h3><div class="chips"><span class="chip" id="n-src-r">12,500행</span><span class="chip">4개 컬럼</span><span class="chip">기본 키 EMP_NO</span></div></button>
+      <div class="link"></div>
+      <button class="node" data-n="dst" data-tip="데이터를 넣을 DB를 선택하고, 신규 테이블 생성 또는 기존 테이블 적재를 정합니다." aria-pressed="false"><small>2 · 대상 <span class="edit">선택</span></small><h3 id="n-dst">PostgreSQL · TB_EMP</h3><div class="chips"><span class="chip" id="n-dst-m">신규 테이블 생성</span><span class="chip" id="n-dst-chunk">2,500행 × 5회 분할</span></div></button>
+      <div class="link"></div>
+      <button class="node" data-n="map" data-tip="원본 컬럼이 들어갈 대상 컬럼을 확인하고 데이터 오류를 검증합니다. 원본과 대상을 먼저 선택하세요." aria-pressed="false"><small>3 · 검토 <span class="edit">열기</span></small><h3>매핑 4건 · 검증 오류 1건</h3><div class="chips"><span class="chip">기본 키 유지</span><span class="chip">경고 2건</span><span class="chip">SALARY 형식 변환</span></div></button>
+    </div>
+    <div class="panel pk" id="pk-src">
+      <h2>원본 선택<span class="hs">이관할 데이터가 있는 DB와 테이블을 선택하세요</span></h2>
+      <div class="form">
+        <label class="f">연결<span class="q" tabindex="0" role="img" aria-label="접속할 DB를 선택합니다. 목록에 없으면 '신규 연결'를 선택하세요." data-tip="접속할 DB를 선택합니다. 목록에 없으면 '신규 연결'를 선택하세요.">?</span><select id="ps-c"><option>Oracle · 운영 복제본</option><option>PostgreSQL · 테스트</option><option>MySQL · 로컬 (연결 불가)</option><option value="new">신규 연결</option></select></label>
+        <label class="f">스키마<span class="q" tabindex="0" role="img" aria-label="테이블이 속한 DB 내 구역(소유자)입니다. 예: HR, SALES" data-tip="테이블이 속한 DB 내 구역(소유자)입니다. 예: HR, SALES">?</span><select id="ps-s"><option>HR</option><option>SALES</option></select></label>
+        <label class="f">테이블<span class="q" tabindex="0" role="img" aria-label="이관할 원본 테이블입니다. 선택하면 행 수가 자동으로 집계됩니다." data-tip="이관할 원본 테이블입니다. 선택하면 행 수가 자동으로 집계됩니다.">?</span><select id="ps-t"><option>EMP</option><option>DEPT</option><option>ORDERS</option></select></label>
+      </div>
+      <div class="cd" id="ps-cd">
+        <div class="cd-h"><b>연결 정보</b><span class="pill" id="ps-st" role="status"></span></div>
+        <div class="form form3">
+          <label class="f">종류<select id="ps-k"><option>Oracle</option><option>PostgreSQL</option><option>MySQL</option><option>MariaDB</option></select></label>
+          <label class="f">주소<span class="q" tabindex="0" role="img" aria-label="DB 서버의 호스트 이름 또는 IP입니다. 로컬이 아닌 주소는 TLS 보안 연결이 필요합니다." data-tip="DB 서버의 호스트 이름 또는 IP입니다. 로컬이 아닌 주소는 TLS 보안 연결이 필요합니다.">?</span><input type="text" id="ps-h"></label>
+          <label class="f">포트<span class="q" tabindex="0" role="img" aria-label="DB 접속 포트입니다. 기본값은 Oracle 1521, PostgreSQL 5432, MySQL·MariaDB 3306입니다." data-tip="DB 접속 포트입니다. 기본값은 Oracle 1521, PostgreSQL 5432, MySQL·MariaDB 3306입니다.">?</span><input type="text" id="ps-p"></label>
+          <label class="f">데이터베이스<span class="q" tabindex="0" role="img" aria-label="접속할 DB 이름입니다. Oracle은 서비스명을 입력합니다." data-tip="접속할 DB 이름입니다. Oracle은 서비스명을 입력합니다.">?</span><input type="text" id="ps-d"></label>
+          <label class="f">사용자<input type="text" id="ps-u"></label>
+          <label class="f">비밀번호<span class="q" tabindex="0" role="img" aria-label="연결 확인에만 사용하며 저장하지 않습니다. 저장된 연결도 확인할 때마다 입력합니다." data-tip="연결 확인에만 사용하며 저장하지 않습니다. 저장된 연결도 확인할 때마다 입력합니다.">?</span><input type="password" id="ps-w" placeholder="저장되지 않습니다" autocomplete="off"></label>
+        </div>
+        <div class="row"><button class="btn" id="ps-test" data-tip="입력한 정보로 DB에 연결할 수 있는지 확인합니다. 저장된 연결도 비밀번호를 입력해야 확인할 수 있습니다.">연결 확인</button><span style="color:var(--mut);font-size:13px">로컬이 아닌 주소는 TLS 보안 연결이 필요합니다</span></div>
+      </div>
+      <div class="chips" style="margin-bottom:14px"><span class="chip">행 수는 선택 시 자동 집계됩니다</span></div>
+      <div class="row"><button class="btn p" id="ps-ok" data-tip="원본을 확정하고 대상 선택으로 넘어갑니다.">원본 확정</button><span style="color:var(--mut);font-size:13px">목록에 없는 경우 연결에서 "+ 신규 연결 추가"를 선택하세요</span></div>
+    </div>
+    <div class="panel pk" id="pk-map" hidden>
+      <h2>컬럼 매핑<span class="q" tabindex="0" role="img" aria-label="원본 컬럼이 어느 대상 컬럼으로 들어갈지 짝지어 주는 설정입니다. 추천값이 미리 입력되어 있습니다." data-tip="원본 컬럼이 어느 대상 컬럼으로 들어갈지 짝지어 주는 설정입니다. 추천값이 미리 입력되어 있습니다.">?</span><span class="hs">원본 컬럼이 들어갈 대상 컬럼을 지정하세요</span></h2>
+      <div class="wrap-x mapt"><table><thead><tr><th>원본 컬럼</th><th>대상 컬럼<span class="hs">대상 테이블의 전체 컬럼</span></th><th>대상 타입</th><th>상태</th></tr></thead><tbody id="map-b"></tbody></table></div>
+      <p class="mapsum" id="map-sum" role="status"></p>
+      <h2 style="margin-top:26px">데이터 검증<span class="q" tabindex="0" role="img" aria-label="형식 오류, 누락, 중복 값을 찾아냅니다. 오류가 남아 있으면 이관을 시작할 수 없습니다." data-tip="형식 오류, 누락, 중복 값을 찾아냅니다. 오류가 남아 있으면 이관을 시작할 수 없습니다.">?</span><span class="hs">이관 전에 형식 오류, 누락, 중복 값을 확인합니다</span></h2>
+      <div class="grid">
+        <div class="stats"><div class="stat"><b>12,500</b><span>검증 행 수</span></div><div class="stat"><b style="color:var(--bad)">1</b><span>오류</span></div><div class="stat"><b style="color:var(--warn)">2</b><span>경고</span></div><div class="stat"><b>12,497</b><span>정상 행</span></div></div>
+        <div class="wrap-x"><table><thead><tr><th>구분</th><th>위치</th><th>내용</th><th></th></tr></thead><tbody>
+      <tr><td><span class="pill bad">오류</span></td><td>3행 · 급여</td><td>숫자 형식이 아닙니다 (4200,000)</td><td><button class="btn sm">해당 셀로 이동</button></td></tr>
+      <tr><td><span class="pill warn">경고</span></td><td>4행 · 사번</td><td>동일한 사번이 2회 존재합니다</td><td><button class="btn sm">해당 셀로 이동</button></td></tr>
+      <tr><td><span class="pill warn">경고</span></td><td>급여 컬럼</td><td>소수점이 있는 값 1건이 반올림 처리됩니다</td><td><button class="btn sm">상세</button></td></tr></tbody></table></div>
+        <div class="row end"><label class="f" style="min-width:200px">중복 행 처리<span class="q" tabindex="0" role="img" aria-label="같은 값이 반복되는 행의 처리 방식입니다. 경고만 표시, 첫 행만 유지, 중복 시 중단 중에서 선택합니다." data-tip="같은 값이 반복되는 행의 처리 방식입니다. 경고만 표시, 첫 행만 유지, 중복 시 중단 중에서 선택합니다.">?</span><select id="k1" style="max-width:220px"><option>경고만 표시</option><option>첫 행만 유지</option><option>중복 시 중단</option></select></label><button class="btn p" data-tip="매핑이나 중복 처리 설정을 바꾼 뒤 다시 검증합니다.">재검증</button></div>
+      </div>
+
+    </div>
+    <div class="panel pk" id="pk-dst" hidden>
+      <h2>대상 선택<span class="hs">데이터를 넣을 DB와 테이블을 선택하세요</span></h2>
+      <div class="form">
+        <label class="f">연결<span class="q" tabindex="0" role="img" aria-label="데이터를 넣을 DB를 선택합니다. 목록에 없으면 '신규 연결'를 선택하세요." data-tip="데이터를 넣을 DB를 선택합니다. 목록에 없으면 '신규 연결'를 선택하세요.">?</span><select id="pd-c"><option>PostgreSQL · 테스트</option><option>Oracle · 운영 복제본</option><option>MySQL · 로컬 (연결 불가)</option><option value="new">신규 연결</option></select></label>
+        <label class="f">스키마<span class="q" tabindex="0" role="img" aria-label="테이블을 생성하거나 적재할 DB 내 구역(소유자)입니다." data-tip="테이블을 생성하거나 적재할 DB 내 구역(소유자)입니다.">?</span><select id="pd-s"><option>public</option><option>staging</option></select></label>
+      </div>
+      <div class="cd" id="pd-cd">
+        <div class="cd-h"><b>연결 정보</b><span class="pill" id="pd-st" role="status"></span></div>
+        <div class="form form3">
+          <label class="f">종류<select id="pd-k"><option>Oracle</option><option>PostgreSQL</option><option>MySQL</option><option>MariaDB</option></select></label>
+          <label class="f">주소<span class="q" tabindex="0" role="img" aria-label="DB 서버의 호스트 이름 또는 IP입니다. 로컬이 아닌 주소는 TLS 보안 연결이 필요합니다." data-tip="DB 서버의 호스트 이름 또는 IP입니다. 로컬이 아닌 주소는 TLS 보안 연결이 필요합니다.">?</span><input type="text" id="pd-h"></label>
+          <label class="f">포트<span class="q" tabindex="0" role="img" aria-label="DB 접속 포트입니다. 기본값은 Oracle 1521, PostgreSQL 5432, MySQL·MariaDB 3306입니다." data-tip="DB 접속 포트입니다. 기본값은 Oracle 1521, PostgreSQL 5432, MySQL·MariaDB 3306입니다.">?</span><input type="text" id="pd-p"></label>
+          <label class="f">데이터베이스<span class="q" tabindex="0" role="img" aria-label="접속할 DB 이름입니다. Oracle은 서비스명을 입력합니다." data-tip="접속할 DB 이름입니다. Oracle은 서비스명을 입력합니다.">?</span><input type="text" id="pd-d"></label>
+          <label class="f">사용자<input type="text" id="pd-u"></label>
+          <label class="f">비밀번호<span class="q" tabindex="0" role="img" aria-label="연결 확인에만 사용하며 저장하지 않습니다. 저장된 연결도 확인할 때마다 입력합니다." data-tip="연결 확인에만 사용하며 저장하지 않습니다. 저장된 연결도 확인할 때마다 입력합니다.">?</span><input type="password" id="pd-w" placeholder="저장되지 않습니다" autocomplete="off"></label>
+        </div>
+        <div class="row"><button class="btn" id="pd-test" data-tip="입력한 정보로 DB에 연결할 수 있는지 확인합니다. 저장된 연결도 비밀번호를 입력해야 확인할 수 있습니다.">연결 확인</button><span style="color:var(--mut);font-size:13px">로컬이 아닌 주소는 TLS 보안 연결이 필요합니다</span></div>
+      </div>
+      <div class="opts">
+        <div class="ol"><input type="radio" name="pd-m" id="pd-new" checked><label for="pd-new">신규 테이블 생성</label><span class="q" tabindex="0" role="img" aria-label="대상에 없는 테이블을 원본 컬럼 구조에 맞춰 새로 생성한 뒤 적재합니다." data-tip="대상에 없는 테이블을 원본 컬럼 구조에 맞춰 새로 생성한 뒤 적재합니다.">?</span></div>
+        <input type="text" id="pd-nm" value="TB_EMP" aria-label="신규 테이블 이름">
+        <div class="ol"><input type="radio" name="pd-m" id="pd-old"><label for="pd-old">기존 테이블에 적재</label><span class="q" tabindex="0" role="img" aria-label="이미 있는 테이블에 행을 추가합니다. 컬럼 구조가 맞아야 합니다." data-tip="이미 있는 테이블에 행을 추가합니다. 컬럼 구조가 맞아야 합니다.">?</span></div>
+        <select id="pd-t" aria-label="기존 테이블" disabled><option>TB_EMPLOYEE</option><option>TB_STAFF</option></select>
+        <div class="ol span"><input type="checkbox" id="pd-k" checked><label for="pd-k">원본 기본 키(PK) 유지</label><span class="q" tabindex="0" role="img" aria-label="기본 키는 행을 구분하는 고유 번호입니다. 선택하면 원본 값을 그대로 가져가고, 해제하면 대상에서 새로 부여합니다." data-tip="기본 키는 행을 구분하는 고유 번호입니다. 선택하면 원본 값을 그대로 가져가고, 해제하면 대상에서 새로 부여합니다.">?</span></div>
+      </div>
+      <div class="split">
+        <div class="sp-h">분할 이관<span class="q" tabindex="0" role="img" aria-label="대용량 데이터를 나누어 이관하는 설정입니다. 분할 단위마다 따로 저장되므로 중단되어도 이어서 진행할 수 있습니다. 기본값은 설정 메뉴의 분할 이관 단위입니다." data-tip="대용량 데이터를 나누어 이관하는 설정입니다. 분할 단위마다 따로 저장되므로 중단되어도 이어서 진행할 수 있습니다. 기본값은 설정 메뉴의 분할 이관 단위입니다.">?</span></div>
+        <div class="row">
+          <label class="f" style="width:200px">분할 단위(행)<input type="text" inputmode="numeric" id="pd-size" value="2500" aria-describedby="pd-split"></label>
+          <div class="chips" id="pd-pre" role="group" aria-label="분할 단위 빠른 선택"><button class="pre" data-v="1000" aria-pressed="false">1,000</button><button class="pre" data-v="2500" aria-pressed="true">2,500</button><button class="pre" data-v="5000" aria-pressed="false">5,000</button><button class="pre" data-v="10000" aria-pressed="false">10,000</button></div>
+        </div>
+        <p class="mapsum" id="pd-split" role="status"></p>
+      </div>
+      <div class="row" style="margin-top:12px"><button class="btn p" id="pd-ok" data-tip="대상을 확정하고 검토 단계로 넘어갑니다.">대상 확정</button></div>
+    </div>
+    <div class="panel"><h2>진행 현황<span class="q" tabindex="0" role="img" aria-label="대용량 데이터를 나누어 이관한 진행률입니다. 분할 단위마다 따로 저장되므로 중단되어도 이어서 진행할 수 있습니다." data-tip="대용량 데이터를 나누어 이관한 진행률입니다. 분할 단위마다 따로 저장되므로 중단되어도 이어서 진행할 수 있습니다.">?</span></h2><div class="prog"><i id="pg-i" style="width:40%"></i></div>
+      <div class="row" style="justify-content:space-between;margin-top:8px;color:var(--mut)"><span id="pg-a">2 / 5회 완료</span><span id="pg-b">5,000 / 12,500행</span><span>중단되어도 재개할 수 있습니다</span></div></div>
+    <div class="panel"><h2>데이터 미리보기</h2><div class="wrap-x"><table><thead><tr><th>사번</th><th>이름</th><th>입사일</th><th style="text-align:right">급여</th></tr></thead><tbody data-rows data-total="200" data-note="미리보기는 샘플 200행만 표시합니다. 이관할 때는 전체 12,500행을 처리합니다."></tbody></table></div></div>
+    <div class="row"><button class="btn p" aria-disabled="true" style="opacity:.5;cursor:not-allowed" data-tip="검증 오류를 모두 해결하면 활성화됩니다. 시작하면 분할 단위로 나누어 이관합니다.">이관 시작</button><button class="btn" data-tip="데이터를 넣지 않고 이관 결과와 생성될 테이블 구조를 미리 확인합니다.">사전 점검</button><button class="btn" data-tip="진행 중인 이관을 중지합니다. 완료된 분량은 유지되며 나중에 재개할 수 있습니다.">중지</button><span class="pill bad">검증 오류 1건을 해결해야 이관할 수 있습니다</span></div>
+  </div>
+</section>
+
+<section id="p-file" hidden>
+  <h1>파일 변환</h1><p class="sub">CSV, Excel, PDF, 이미지를 표로 변환하여 SQL, Excel, CSV로 출력합니다.</p>
+  <div class="grid">
+    <div class="drop"><b>파일을 이곳에 업로드하세요</b>Excel · CSV · PDF · PNG/JPEG · 최대 10MB<div class="row" style="justify-content:center;margin-top:14px"><button class="btn p">파일 선택</button><button class="btn">샘플로 시작</button></div></div>
+    <div class="two">
+      <div class="panel"><h2>데이터 미리보기 (employees.csv)</h2><div class="wrap-x"><table><thead><tr><th>사번</th><th>이름</th><th>입사일</th><th style="text-align:right">급여</th></tr></thead><tbody data-rows data-total="120" data-note="employees.csv 전체 120행"></tbody></table></div></div>
+      <div class="panel"><h2>입력 설정</h2><div class="grid">
+        <label class="f">헤더 행<select id="s1"><option>1행</option><option>2행</option></select></label>
+        <label class="f">문자 인코딩<select id="s2"><option>자동 감지</option><option>UTF-8</option><option>EUC-KR</option></select></label>
+        <label class="f">시트<select id="s3"><option>Sheet1</option></select></label></div></div>
+    </div>
+    <div class="panel"><h2>파일로 출력<span class="hs">변환한 표를 파일로 내려받습니다</span></h2><div class="row"><button class="btn p">SQL 파일</button><button class="btn">Excel 파일</button><button class="btn">CSV 파일</button></div></div>
+    <div class="panel" id="fl-panel"><h2>DB 적재<span class="hs">변환한 표를 대상 DB의 테이블에 넣습니다</span></h2>
+      <div class="form"><label class="f">연결<span class="q" tabindex="0" role="img" aria-label="데이터를 넣을 DB를 선택합니다. 목록에 없으면 신규 연결을 선택하세요." data-tip="데이터를 넣을 DB를 선택합니다. 목록에 없으면 신규 연결을 선택하세요.">?</span><select id="fl-c"></select></label>
+        <label class="f">스키마<span class="q" tabindex="0" role="img" aria-label="테이블을 생성하거나 적재할 DB 내 구역(소유자)입니다." data-tip="테이블을 생성하거나 적재할 DB 내 구역(소유자)입니다.">?</span><select id="fl-s"><option>public</option><option>staging</option></select></label></div>
+      <div class="cd" id="fl-cd">
+        <div class="cd-h"><b>연결 정보</b><span class="pill" id="fl-st" role="status"></span></div>
+        <div class="form form3">
+          <label class="f">종류<select id="fl-k"><option>Oracle</option><option>PostgreSQL</option><option>MySQL</option><option>MariaDB</option></select></label>
+          <label class="f">주소<input type="text" id="fl-h"></label>
+          <label class="f">포트<input type="text" id="fl-p"></label>
+          <label class="f">데이터베이스<input type="text" id="fl-d"></label>
+          <label class="f">사용자<input type="text" id="fl-u"></label>
+          <label class="f">비밀번호<span class="q" tabindex="0" role="img" aria-label="연결 확인에만 사용하며 저장하지 않습니다. 저장된 연결도 확인할 때마다 입력합니다." data-tip="연결 확인에만 사용하며 저장하지 않습니다. 저장된 연결도 확인할 때마다 입력합니다.">?</span><input type="password" id="fl-w" placeholder="저장되지 않습니다" autocomplete="off"></label>
+        </div>
+        <div class="row"><button class="btn" id="fl-test" data-tip="입력한 정보로 DB에 연결할 수 있는지 확인합니다. 저장된 연결도 비밀번호를 입력해야 확인할 수 있습니다.">연결 확인</button><span style="color:var(--mut);font-size:13px">로컬이 아닌 주소는 TLS 보안 연결이 필요합니다</span></div>
+      </div>
+      <div class="opts">
+        <div class="ol"><input type="radio" name="fl-m" id="fl-new" checked><label for="fl-new">신규 테이블 생성</label><span class="q" tabindex="0" role="img" aria-label="대상에 없는 테이블을 변환한 표의 컬럼 구조에 맞춰 새로 생성한 뒤 적재합니다." data-tip="대상에 없는 테이블을 변환한 표의 컬럼 구조에 맞춰 새로 생성한 뒤 적재합니다.">?</span></div>
+        <input type="text" id="fl-nm" value="TB_EMPLOYEE_NEW" aria-label="신규 테이블 이름">
+        <div class="ol"><input type="radio" name="fl-m" id="fl-old"><label for="fl-old">기존 테이블에 적재</label><span class="q" tabindex="0" role="img" aria-label="이미 있는 테이블에 행을 추가합니다. 컬럼 구조가 맞아야 합니다." data-tip="이미 있는 테이블에 행을 추가합니다. 컬럼 구조가 맞아야 합니다.">?</span></div>
+        <select id="fl-t" aria-label="기존 테이블" disabled><option>TB_EMPLOYEE</option><option>TB_STAFF</option></select>
+      </div>
+      <div class="split">
+        <div class="ol"><input type="checkbox" id="fl-agree"><label for="fl-agree">대상과 행 수(120행)를 확인했으며 실제 DB에 적재하는 것에 동의합니다</label><span class="q" tabindex="0" role="img" aria-label="적재는 전체 성공 또는 전체 취소(롤백)로 처리되며, 같은 요청은 한 번만 적용됩니다. 데이터 검증을 통과한 표만 적재할 수 있습니다." data-tip="적재는 전체 성공 또는 전체 취소(롤백)로 처리되며, 같은 요청은 한 번만 적용됩니다. 데이터 검증을 통과한 표만 적재할 수 있습니다.">?</span></div>
+        <div class="row"><button class="btn p" id="fl-ok" data-tip="검증을 통과한 표를 선택한 대상에 적재합니다. 설정에서 데이터베이스 적재를 활성화해야 합니다.">DB 적재</button><span class="pill" id="fl-msg" role="status" hidden></span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="p-hist" hidden>
+  <h1>작업 이력</h1><p class="sub">수행한 이관 작업 목록입니다. 비밀번호와 데이터 본문은 기록하지 않습니다.</p>
+  <div class="panel"><div class="wrap-x"><table><thead><tr><th>일시</th><th>작업</th><th>원본 → 대상</th><th style="text-align:right">행 수</th><th>상태</th><th></th></tr></thead><tbody>
+    <tr><td>오늘 11:02</td><td>사원 데이터 이관</td><td>Oracle → PostgreSQL</td><td class="num">5,000 / 12,500</td><td><span class="pill run">진행 중</span></td><td><button class="btn sm">중지</button></td></tr>
+    <tr><td>오늘 09:12</td><td>주문 내역 이관</td><td>MySQL → PostgreSQL</td><td class="num">3,200</td><td><span class="pill ok">완료</span></td><td><button class="btn sm">상세</button></td></tr>
+    <tr><td>어제 17:40</td><td>고객 목록 이관</td><td>MariaDB → Oracle</td><td class="num">3,000 / 4,800</td><td><span class="pill bad">4회차에서 중단</span></td><td><button class="btn sm" data-tip="중단된 지점부터 이어서 이관합니다. 완료된 분량은 건너뜁니다.">재개</button></td></tr>
+    <tr><td>어제 15:05</td><td>급여표 변환</td><td>Excel → SQL 파일</td><td class="num">240</td><td><span class="pill ok">완료</span></td><td><button class="btn sm">상세</button></td></tr></tbody></table></div></div>
+</section>
+
+<section id="p-set" hidden>
+  <h1>설정</h1><p class="sub">기본값은 비활성화입니다. 필요한 기능만 활성화하세요.</p>
+  <div class="panel">
+    <div class="sw"><div><b>데이터베이스 조회</b><p>DB에 연결하여 테이블과 데이터를 조회합니다</p></div><button class="tg" role="switch" aria-checked="true" aria-label="데이터베이스 조회"></button></div>
+    <div class="sw"><div><b>데이터베이스 적재</b><p>대상 DB에 데이터를 실제로 적재합니다. 활성화 전에 한 번 더 확인합니다</p></div><button class="tg" role="switch" aria-checked="false" aria-label="데이터베이스 적재"></button></div>
+    <div class="sw"><div><b>분할 이관 단위</b><p>대용량 테이블을 나누어 이관하는 단위입니다. 작을수록 중단 시 재작업 범위가 줄어듭니다</p></div><select id="z1" style="max-width:140px"><option>1,000행</option><option selected>2,500행</option><option>5,000행</option></select></div>
+    <div class="sw"><div><b>외부 서버 문자 인식(OCR) 전송</b><p>기본값은 로컬 인식입니다. 활성화하면 파일마다 동의를 한 번 더 받습니다</p></div><button class="tg" role="switch" aria-checked="false" aria-label="외부 글자 읽기"></button></div>
+  </div>
+</section>
+
+</main>
+
+<script>
+var D=[["001","김하늘","2026-01-15","3,500,000"],["002","이도윤","2026-03-02","4,200,000"],["003","박서연","2026-06-18","3,800,000"],["004","최민준","2026-08-09","4,050,000"]];
+document.querySelectorAll("tbody[data-rows]").forEach(function(t){t.innerHTML=D.map(function(r){return "<tr>"+r.map(function(c,i){return "<td"+(i==3?' class="num"':"")+">"+c+"</td>"}).join("")+"</tr>"}).join("")});
+var NM=["김하늘","이도윤","박서연","최민준","정수아","한지우","오세훈","윤채원"];
+function z(n,l){n=String(n);while(n.length<l)n="0"+n;return n}
+function rowOf(i){var d=new Date(2022,0,3+i*7);var sal=3000000+((i*137)%25)*50000;return [z(i+1,3),NM[i%NM.length],d.getFullYear()+"-"+z(d.getMonth()+1,2)+"-"+z(d.getDate(),2),sal.toLocaleString("en-US")]}
+document.querySelectorAll("tbody[data-rows]").forEach(function(tb){
+  var total=+tb.dataset.total||D.length,size=10,page=0,wrap=tb.closest(".wrap-x");
+  var bar=document.createElement("div");bar.className="pager";wrap.parentNode.insertBefore(bar,wrap.nextSibling);
+  function draw(){
+    var pages=Math.max(1,Math.ceil(total/size));page=Math.min(page,pages-1);var from=page*size,to=Math.min(total,from+size),h="";
+    for(var i=from;i<to;i++){h+="<tr>"+rowOf(i).map(function(c,k){return "<td"+(k==3?' class="num"':"")+">"+c+"</td>"}).join("")+"</tr>"}
+    tb.innerHTML=h;
+    bar.innerHTML='<span>'+(from+1)+'–'+to+' / '+total+'행'+(tb.dataset.note?' · '+tb.dataset.note:'')+'</span><span class="ctl"><label>페이지당 <select aria-label="페이지당 행 수"><option'+(size==10?' selected':'')+'>10</option><option'+(size==50?' selected':'')+'>50</option><option'+(size==100?' selected':'')+'>100</option></select>행</label><button class="btn sm" data-a="prev"'+(page==0?' disabled':'')+'>이전</button><span>'+(page+1)+' / '+pages+'</span><button class="btn sm" data-a="next"'+(page>=pages-1?' disabled':'')+'>다음</button></span>';
+  }
+  bar.addEventListener("click",function(e){var a=e.target.getAttribute&&e.target.getAttribute("data-a");if(a==="prev"&&page>0){page--;draw()}if(a==="next"){page++;draw()}});
+  bar.addEventListener("change",function(e){if(e.target.tagName==="SELECT"){size=+e.target.value;page=0;draw()}});
+  draw();
+});
+var SRC=[{n:"EMP_NO",t:"string",d:"varchar2(20)",len:20,pk:1},{n:"EMP_NM",t:"string",d:"varchar2(50)",len:50},{n:"HIRE_DT",t:"date",d:"date"},{n:"SALARY",t:"decimal",d:"number(10,2)"}];
+var TGT=[{n:"emp_no",t:"string",d:"varchar(20)",len:20},{n:"emp_name",t:"string",d:"varchar(20)",len:20},{n:"hire_date",t:"date",d:"date"},{n:"salary",t:"integer",d:"integer"},{n:"dept_cd",t:"string",d:"varchar(10)",len:10},{n:"created_at",t:"datetime",d:"timestamp"},{n:"memo",t:"string",d:"text",len:99999}];
+var MAP=[0,1,2,3];
+function stat(i){var sc=SRC[i],ti=MAP[i];if(ti<0)return ["","제외","이 컬럼은 이관하지 않습니다"];var t=TGT[ti];
+  if(MAP.some(function(x,k){return k!==i&&x===ti}))return ["bad","중복 선택","같은 대상 컬럼이 다른 원본 컬럼에도 지정되어 있습니다"];
+  if(sc.t==="string"&&t.t==="string")return t.len<sc.len?["warn","길이 초과 위험","원본 최대 "+sc.len+"자 > 대상 "+t.len+"자. 사전 점검에서 실제 값의 길이를 확인합니다"]:["ok","호환",""];
+  if(sc.t==="decimal"&&t.t==="integer")return ["warn","소수점 반올림","소수점 이하 값은 반올림되어 들어갑니다"];
+  if(sc.t==="date"&&t.t==="datetime")return ["","자동 변환","날짜에 00:00:00을 붙여 넣습니다"];
+  if(sc.t===t.t)return ["ok","호환",""];
+  if(t.t==="string")return ["","자동 변환","문자열로 바꿔 넣습니다"];
+  return ["bad","호환 불가",sc.d+" 값을 "+t.d+"에 넣을 수 없습니다. 다른 컬럼을 선택하세요"]}
+function drawMap(){var b=document.getElementById("map-b"),h="",w=0,e=0;
+  SRC.forEach(function(sc,i){var r=stat(i);if(r[0]==="warn")w++;if(r[0]==="bad")e++;
+    var o=TGT.map(function(t,k){return '<option value="'+k+'"'+(MAP[i]===k?" selected":"")+'>'+t.n+' · '+t.d+'</option>'}).join("")+'<option value="-1"'+(MAP[i]<0?" selected":"")+'>(이관 제외)</option>';
+    h+='<tr><td>'+sc.n+(sc.pk?' <span class="pill">기본 키</span>':'')+'<small>'+sc.d+'</small></td><td><select data-i="'+i+'" aria-label="'+sc.n+'의 대상 컬럼">'+o+'</select></td><td>'+(MAP[i]<0?"-":TGT[MAP[i]].d)+'</td><td class="st"><span class="pill '+r[0]+'">'+r[1]+'</span>'+(r[2]?'<small>'+r[2]+'</small>':'')+'</td></tr>'});
+  b.innerHTML=h;document.getElementById("map-sum").textContent="매핑 "+SRC.length+"건 · 경고 "+w+"건 · 호환 불가 "+e+"건"+(e?" — 호환 불가 항목을 해결해야 이관할 수 있습니다":"")}
+document.getElementById("map-b").addEventListener("change",function(ev){var t=ev.target;if(t.tagName==="SELECT"){MAP[+t.dataset.i]=+t.value;drawMap()}});
+drawMap();
+function totalRows(){return parseInt(document.getElementById("n-src-r").textContent.replace(/\D/g,""),10)||0}
+function fmt(n){return n.toLocaleString("en-US")}
+function splitUpdate(){
+  var inp=document.getElementById("pd-size"),msg=document.getElementById("pd-split"),total=totalRows();
+  var v=parseInt(inp.value.replace(/\D/g,""),10);
+  document.querySelectorAll("#pd-pre .pre").forEach(function(b){b.setAttribute("aria-pressed",String(+b.dataset.v===v))});
+  if(!(v>=100&&v<=10000)){msg.className="mapsum bad";msg.textContent="분할 단위는 100~10,000행 사이로 입력하세요";return}
+  var n=Math.ceil(total/v),last=total-(n-1)*v,chip=document.getElementById("n-dst-chunk");
+  msg.className="mapsum";
+  if(n<=1){msg.textContent="총 "+fmt(total)+"행은 분할 없이 한 번에 이관합니다";chip.textContent="분할 없음"}
+  else{msg.textContent="총 "+fmt(total)+"행 ÷ "+fmt(v)+"행 = "+n+"회 분할 (마지막 회 "+fmt(last)+"행)";chip.textContent=fmt(v)+"행 × "+n+"회 분할"}
+  var done=Math.floor(n/2),rows=Math.min(total,done*v);
+  document.getElementById("pg-a").textContent=done+" / "+n+"회 완료";
+  document.getElementById("pg-b").textContent=fmt(rows)+" / "+fmt(total)+"행";
+  document.getElementById("pg-i").style.width=(total?Math.round(rows/total*100):0)+"%";
+}
+document.getElementById("pd-size").addEventListener("input",splitUpdate);
+document.getElementById("pd-pre").addEventListener("click",function(e){var v=e.target.getAttribute&&e.target.getAttribute("data-v");if(v){document.getElementById("pd-size").value=v;splitUpdate()}});
+function modeUpdate(){var nw=document.getElementById("pd-new").checked;document.getElementById("pd-nm").disabled=!nw;document.getElementById("pd-t").disabled=nw}
+document.getElementById("pd-new").addEventListener("change",modeUpdate);document.getElementById("pd-old").addEventListener("change",modeUpdate);
+document.getElementById("ps-ok").addEventListener("click",splitUpdate);
+modeUpdate();splitUpdate();
+function flMode(){var nw=document.getElementById("fl-new").checked;document.getElementById("fl-nm").disabled=!nw;document.getElementById("fl-t").disabled=nw}
+document.getElementById("fl-new").addEventListener("change",flMode);document.getElementById("fl-old").addEventListener("change",flMode);flMode();
+function flMsg(c,t){var e=document.getElementById("fl-msg");e.hidden=false;e.className="pill "+c;e.textContent=t}
+document.getElementById("fl-c").addEventListener("change",function(){document.getElementById("fl-msg").hidden=true});
+document.getElementById("fl-test").addEventListener("click",function(){document.getElementById("fl-msg").hidden=true});
+document.getElementById("fl-ok").addEventListener("click",function(){
+  if(!V.fl){flMsg("warn","연결 확인을 먼저 완료하세요");return}
+  var on=document.querySelector('.tg[aria-label="데이터베이스 적재"]').getAttribute("aria-checked")==="true";
+  if(!on){flMsg("warn","설정 메뉴에서 '데이터베이스 적재'를 활성화해야 적재할 수 있습니다");return}
+  if(!document.getElementById("fl-agree").checked){flMsg("warn","대상과 행 수를 확인하고 동의에 체크해 주세요");return}
+  var nw=document.getElementById("fl-new").checked,t=nw?document.getElementById("fl-nm").value:document.getElementById("fl-t").value;
+  flMsg("ok","적재 완료 · "+document.getElementById("fl-s").value+"."+t+" · 120행")});
+var P=["new","file","hist","set"];
+function page(p){P.forEach(function(x){document.getElementById("p-"+x).hidden=x!==p});document.querySelectorAll("#nav button").forEach(function(b){if(b.dataset.p===p)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});try{history.replaceState(null,"","#"+p)}catch(e){}}
+document.querySelectorAll("#nav button").forEach(function(b){b.addEventListener("click",function(){page(b.dataset.p)})});
+var h=(location.hash||"").slice(1);if(P.indexOf(h)>-1)page(h);
+function theme(t){document.documentElement.setAttribute("data-theme",t);document.querySelectorAll(".theme button").forEach(function(x){x.setAttribute("aria-pressed",x.dataset.t===t)});try{localStorage.setItem("tf-theme",t)}catch(e){}}
+document.querySelectorAll(".theme button").forEach(function(x){x.addEventListener("click",function(){theme(x.dataset.t)})});
+var saved=null;try{saved=localStorage.getItem("tf-theme")}catch(e){}
+if(saved!=="light"&&saved!=="dark")saved=(window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"light";
+theme(saved);
+function pick(n){document.getElementById("next-t").textContent=NEXT[n];["src","map","dst"].forEach(function(x){document.getElementById("pk-"+x).hidden=x!==n});document.querySelectorAll("button.node").forEach(function(b){b.setAttribute("aria-pressed",b.dataset.n===n)})}
+document.querySelectorAll("button.node").forEach(function(b){b.addEventListener("click",function(){pick(b.dataset.n)})});
+
+var NEXT={src:"원본 DB와 테이블을 선택한 뒤 '원본 확정'을 누르세요. 연결 목록에 없으면 '신규 연결'를 선택합니다.",dst:"대상 DB를 선택하고 신규 테이블 생성 또는 기존 테이블 적재를 고른 뒤 '대상 확정'을 누르세요.",map:"컬럼 매핑을 확인하고 검증 오류 1건을 해결하세요. 모두 해결하면 '이관 시작'을 누를 수 있습니다."};
+var tip=document.createElement("div");tip.id="tip";tip.setAttribute("role","tooltip");document.body.appendChild(tip);
+function showTip(el){var t=el.getAttribute("data-tip");if(!t)return;tip.textContent=t;tip.style.left="0px";tip.style.top="0px";tip.style.display="block";el.setAttribute("aria-describedby","tip");var r=el.getBoundingClientRect(),w=tip.offsetWidth,h=tip.offsetHeight;var x=Math.min(Math.max(8,r.left+r.width/2-w/2),innerWidth-w-8);var y=r.bottom+8;if(y+h>innerHeight-8)y=r.top-h-8;tip.style.left=x+"px";tip.style.top=Math.max(8,y)+"px"}
+function hideTip(){tip.style.display="none"}
+document.addEventListener("mouseover",function(e){var el=e.target.closest&&e.target.closest("[data-tip]");if(el)showTip(el);else hideTip()});
+document.addEventListener("focusin",function(e){var el=e.target.closest&&e.target.closest("[data-tip]");if(el)showTip(el)});
+document.addEventListener("focusout",hideTip);document.addEventListener("scroll",hideTip,true);
+document.addEventListener("keydown",function(e){if(e.key==="Escape")hideTip()});
+document.addEventListener("click",function(e){var el=e.target.closest&&e.target.closest(".q");if(el){e.preventDefault();showTip(el)}});
+var ROWS={EMP:"12,500행",DEPT:"48행",ORDERS:"3,200행"};
+function sel(id){var e=document.getElementById(id);return e.options[e.selectedIndex].text}
+document.getElementById("ps-ok").addEventListener("click",function(){document.getElementById("n-src").textContent=sel("ps-c").split(" ·")[0]+" · "+sel("ps-s")+"."+sel("ps-t");document.getElementById("n-src-r").textContent=ROWS[sel("ps-t")];pick("dst")});
+document.getElementById("pd-ok").addEventListener("click",function(){var nw=document.getElementById("pd-new").checked;var t=nw?document.getElementById("pd-nm").value||"신규 테이블":sel("pd-t");document.getElementById("n-dst").textContent=sel("pd-c").split(" ·")[0]+" · "+t;document.getElementById("n-dst-m").textContent=nw?"신규 테이블 생성":"기존 테이블에 적재";pick("map")});
+
+var CONNS=[{id:"ora",kind:"Oracle",host:"127.0.0.1",port:"11521",db:"FREEPDB1",user:"tableflow",name:"Oracle · 운영 복제본"},{id:"pg",kind:"PostgreSQL",host:"127.0.0.1",port:"15432",db:"tableflow",user:"tableflow",name:"PostgreSQL · 테스트"},{id:"my",kind:"MySQL",host:"127.0.0.1",port:"13316",db:"tableflow",user:"tableflow",name:"MySQL · 로컬"}];
+var VER={ora:true,pg:true,my:false},V={ps:true,pd:true,fl:true},DEFPORT={Oracle:"1521",PostgreSQL:"5432",MySQL:"3306",MariaDB:"3306"};
+function cf(x,k){return document.getElementById(x+"-"+k)}
+function setPill(x,cls,t){var e=cf(x,"st");e.className="pill "+cls;e.textContent=t}
+function fillConns(){["ps","pd","fl"].forEach(function(x){var e=cf(x,"c"),cur=e.value;e.innerHTML=CONNS.map(function(c){return '<option value="'+c.id+'">'+c.name+'</option>'}).join("")+'<option value="new">신규 연결</option>';if(cur)e.value=cur})}
+function loadConn(x){var id=cf(x,"c").value;
+  if(id==="new"){cf(x,"k").value="Oracle";cf(x,"h").value="127.0.0.1";cf(x,"p").value=DEFPORT.Oracle;cf(x,"d").value="";cf(x,"u").value="";cf(x,"w").value="";V[x]=false;setPill(x,"","새 연결 · 정보를 입력하고 연결 확인");return}
+  var c=CONNS.filter(function(k){return k.id===id})[0];
+  cf(x,"k").value=c.kind;cf(x,"h").value=c.host;cf(x,"p").value=c.port;cf(x,"d").value=c.db;cf(x,"u").value=c.user;cf(x,"w").value="";
+  V[x]=!!VER[id];
+  if(VER[id])setPill(x,"ok","연결 성공");else if(id==="my")setPill(x,"bad","연결 불가 · 서버가 응답하지 않습니다");else setPill(x,"","비밀번호를 입력하고 연결 확인");
+}
+function testConn(x){var id=cf(x,"c").value,host=cf(x,"h").value.trim(),port=cf(x,"p").value.trim();
+  if(!host){V[x]=false;setPill(x,"bad","주소를 입력하세요");return}
+  if(!cf(x,"w").value){V[x]=false;setPill(x,"warn","비밀번호를 입력하세요. 비밀번호는 저장되지 않아 확인할 때마다 필요합니다");return}
+  if(id==="my"||port==="13316"){V[x]=false;if(id!=="new")VER[id]=false;setPill(x,"bad","연결 불가 · "+host+":"+port+" 서버가 응답하지 않습니다");return}
+  if(id==="new"){var nid="c"+(CONNS.length+1);CONNS.push({id:nid,kind:cf(x,"k").value,name:cf(x,"k").value+" · "+host+":"+port});VER[nid]=true;fillConns();cf(x,"c").value=nid}
+  else VER[id]=true;
+  V[x]=true;cf(x,"w").value="";setPill(x,"ok","연결 성공")}
+["ps","pd","fl"].forEach(function(x){
+  cf(x,"c").addEventListener("change",function(){loadConn(x)});
+  cf(x,"k").addEventListener("change",function(){if(cf(x,"c").value==="new")cf(x,"p").value=DEFPORT[cf(x,"k").value]});
+  cf(x,"test").addEventListener("click",function(){testConn(x)});
+  cf(x,"ok").addEventListener("click",function(e){if(!V[x]){e.stopImmediatePropagation();setPill(x,"warn","연결 확인을 먼저 완료하세요")}},true);
+});
+fillConns();cf("ps","c").value="ora";cf("pd","c").value="pg";cf("fl","c").value="pg";loadConn("ps");loadConn("pd");loadConn("fl");
+pick("src");
+document.querySelectorAll(".tg").forEach(function(b){b.addEventListener("click",function(){b.setAttribute("aria-checked",b.getAttribute("aria-checked")!=="true")})});
+</script>

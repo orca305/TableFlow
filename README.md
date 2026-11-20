@@ -23,7 +23,7 @@ Excel/CSV/PDF/이미지와 관계형 DB(Oracle·PostgreSQL·MySQL·MariaDB)의 �
 
 | 새 테이블 만들기(CREATE TABLE 미리보기) | 대용량(12,500행) 청크 이전 완료 + 작업 이력 |
 |---|---|
-| ![테이블 생성](docs/screenshots/03-db-to-db-create-table-preview.png) | ![대용량](docs/screenshots/04-db-to-db-chunked-done-history.png) |
+| ![테이블 생성](docs/screenshots/03-db-to-db-create-table-preview.png) | ![대용량](docs/screenshots/04-db-to-db-chunked-done.png) |
 
 스크린샷은 `SCREENSHOTS=true npx playwright test tests/screenshots.spec.ts`로 다시 만들 수 있습니다(두 번째 화면은 실제 DB 컨테이너 필요). 비밀번호는 마스킹된 입력란이며 값은 저장·노출되지 않습니다.
 

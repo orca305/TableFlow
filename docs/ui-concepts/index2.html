@@ -1,0 +1,204 @@
+<title>TableFlow UI 시안 2</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* 레이아웃: 상단 시안 선택 바 + 선택한 시안을 화면 폭 전체로 표시. 각 시안은 자기 색 체계를 가진다. */
+:root{--bg:#f3f4f6;--fg:#14171f;--mut:#5d6573;--line:#d9dde4;--card:#fff;--acc:#3b5bdb;--font:"Pretendard","Noto Sans KR","Malgun Gothic",system-ui,sans-serif;--mono:"JetBrains Mono",Consolas,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#101215;--fg:#e9ebef;--mut:#9aa2b0;--line:#2a2e36;--card:#171a1f;--acc:#8ea2ff;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#101215;--fg:#e9ebef;--mut:#9aa2b0;--line:#2a2e36;--card:#171a1f;--acc:#8ea2ff;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:14px/1.5 var(--font);margin:0}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:30;background:var(--card)}
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--card);border-bottom:1px solid var(--line);padding-block:8px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.bar b{font-weight:600;margin-right:8px}
+.bar button{font:inherit;border:1px solid var(--line);background:transparent;color:var(--fg);padding:6px 12px;border-radius:6px;cursor:pointer}
+.bar button[aria-pressed="true"]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.bar button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.note{color:var(--mut);font-size:12px;margin-left:auto}
+.v{min-height:calc(100vh - 56px)}
+table{border-collapse:collapse;width:100%}
+td,th{text-align:left;font-weight:inherit;white-space:nowrap}
+.wrap-x{overflow-x:auto}
+button.x{font:inherit;cursor:pointer}
+
+/* F 안내형: 한 번에 질문 하나 */
+.vf{background:#fff8f3;color:#2b211d;display:grid;grid-template-rows:auto 1fr}
+.vf .top{padding:18px 28px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+.vf .logo{font-weight:800;font-size:18px;color:#e8573a}
+.vf .dots{display:flex;gap:8px;align-items:center;font-size:13px;color:#8a7468}
+.vf .dots i{width:30px;height:6px;border-radius:3px;background:#f0dcd0}.vf .dots i.on{background:#e8573a}
+.vf .stage{display:grid;place-items:center;padding:24px}
+.vf .card{background:#fff;border:2px solid #f0dcd0;border-radius:24px;padding:36px;width:min(760px,100%);display:grid;gap:22px}
+.vf h1{margin:0;font-size:30px;line-height:1.25;letter-spacing:-.02em}
+.vf p{margin:0;color:#8a7468;font-size:15px}
+.vf .pair{display:grid;grid-template-columns:1fr 36px 1fr;gap:10px;align-items:center}
+.vf .tile{border:2px solid #f0dcd0;border-radius:16px;padding:16px;display:grid;gap:2px}
+.vf .tile.on{border-color:#e8573a;background:#fff1ea}
+.vf .tile small{color:#8a7468;font-size:12px}.vf .tile b{font-size:17px}
+.vf .arrow{text-align:center;font-size:22px;color:#e8573a}
+.vf .sum{background:#fff8f3;border-radius:14px;padding:14px 16px;font-size:14px;display:grid;gap:4px}
+.vf .acts{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.vf .btn{background:#e8573a;color:#fff;border:0;border-radius:14px;padding:14px 30px;font-weight:700;font-size:16px}
+.vf .btn.g{background:transparent;color:#8a7468;border:2px solid #f0dcd0}
+@media(max-width:620px){.vf .pair{grid-template-columns:1fr}.vf .arrow{transform:rotate(90deg)}}
+
+/* G 작업 보드: 진행 중 / 끝남 / 멈춤 */
+.vg{background:#eef0f4;color:#16203a}
+.vg .top{background:#16203a;color:#fff;padding:14px 28px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+.vg .top b{font-size:17px}.vg .top span{color:#aab3cc;font-size:13px}
+.vg .top .new{margin-left:auto;background:#ffd23f;color:#16203a;border:0;border-radius:8px;padding:8px 16px;font-weight:700}
+.vg .cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;padding:24px 28px}
+.vg .col h3{margin:0 0 10px;font-size:13px;color:#5a6580;display:flex;justify-content:space-between}
+.vg .job{background:#fff;border-radius:12px;padding:14px 16px;margin-bottom:12px;display:grid;gap:8px;border:1px solid #dde1ea}
+.vg .job b{font-size:15px}.vg .job small{color:#5a6580}
+.vg .bar2{height:8px;background:#e6e9f0;border-radius:4px;overflow:hidden}.vg .bar2 i{display:block;height:100%;background:#2b59ff}
+.vg .tag{display:inline-block;font-size:12px;padding:2px 10px;border-radius:99px}
+.vg .t1{background:#e4ecff;color:#1b3fb8}.vg .t2{background:#dff5e6;color:#17693a}.vg .t3{background:#fde6e3;color:#a02a1f}
+.vg .btn{border:1px solid #c6ccdb;background:#fff;border-radius:8px;padding:6px 12px;font-weight:600;color:#16203a;justify-self:start}
+.vg .btn.p{background:#2b59ff;border-color:#2b59ff;color:#fff}
+@media(max-width:860px){.vg .cols{grid-template-columns:1fr}}
+
+/* H 전후 비교 */
+.vh{background:#fff;color:#111;display:grid;grid-template-rows:auto auto 1fr auto}
+.vh .top{padding:16px 28px;border-bottom:2px solid #111;display:flex;gap:14px;align-items:baseline;flex-wrap:wrap}
+.vh .top b{font-size:20px;letter-spacing:-.02em}.vh .top span{color:#666}
+.vh .sum{display:flex;gap:28px;padding:14px 28px;background:#f6f6f6;border-bottom:1px solid #ddd;font-size:13px;flex-wrap:wrap}
+.vh .sum i{font-style:normal;font-weight:700;font-size:18px;display:block}
+.vh .cmp{display:grid;grid-template-columns:1fr 1fr;gap:0}
+.vh .side{padding:20px 28px;min-width:0}.vh .side+.side{border-left:2px solid #111}
+.vh .side h3{margin:0 0 4px;font-size:15px}.vh .side p{margin:0 0 12px;color:#666;font-size:13px}
+.vh td,.vh th{padding:9px 12px;border-bottom:1px solid #e4e4e4}.vh th{font-size:12px;color:#666}
+.vh .del{background:#ffecec;color:#a11}.vh .add{background:#e8f8ec;color:#0a6b2c}.vh .same{color:#999}
+.vh .legend{display:flex;gap:14px;font-size:12px;padding:10px 28px;color:#666;flex-wrap:wrap}
+.vh .act{padding:14px 28px;border-top:2px solid #111;display:flex;gap:10px;justify-content:flex-end}
+.vh .btn{background:#111;color:#fff;border:0;padding:11px 22px;font-weight:600;border-radius:0}.vh .btn.g{background:#fff;color:#111;border:2px solid #111}
+@media(max-width:860px){.vh .cmp{grid-template-columns:1fr}.vh .side+.side{border-left:0;border-top:2px solid #111}}
+
+/* I 대화형 */
+.vi{background:#edf1f7;color:#18202e;display:grid;grid-template-rows:auto 1fr auto}
+.vi .top{padding:14px 28px;background:#fff;border-bottom:1px solid #d9e0ec;display:flex;justify-content:space-between;font-weight:600}
+.vi .chat{max-width:760px;width:100%;margin:0 auto;padding:24px 20px;display:grid;gap:14px;align-content:start}
+.vi .m{max-width:86%;padding:12px 16px;border-radius:18px;line-height:1.6}
+.vi .bot{background:#fff;border:1px solid #d9e0ec;border-bottom-left-radius:4px}
+.vi .me{background:#0b5fff;color:#fff;justify-self:end;border-bottom-right-radius:4px}
+.vi .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.vi .chip{border:1px solid #0b5fff;color:#0b5fff;border-radius:99px;padding:5px 14px;background:#fff;font-size:13px}
+.vi .res{background:#fff;border:1px solid #d9e0ec;border-radius:14px;overflow:hidden;max-width:100%}
+.vi .res h4{margin:0;padding:10px 14px;font-size:13px;background:#f4f7fc;color:#5a6780;font-weight:600}
+.vi td,.vi th{padding:7px 14px;border-top:1px solid #e8edf5}.vi th{font-size:12px;color:#5a6780;border-top:0}
+.vi .input{background:#fff;border-top:1px solid #d9e0ec;padding:14px 20px}
+.vi .input div{max-width:760px;margin:0 auto;border:1px solid #c4cee0;border-radius:99px;padding:11px 20px;color:#8b97ad;display:flex;justify-content:space-between}
+.vi .input b{color:#0b5fff}
+
+/* J 체크리스트 + 영수증 */
+.vj{background:#fff4c2;color:#111;display:grid;grid-template-columns:1fr 360px;gap:0}
+.vj .l{padding:28px;display:grid;gap:14px;align-content:start;min-width:0}
+.vj h1{margin:0;font-size:34px;letter-spacing:-.03em;line-height:1.1}
+.vj .it{background:#fff;border:3px solid #111;border-radius:0;padding:14px 16px;display:flex;gap:14px;align-items:flex-start;box-shadow:5px 5px 0 #111}
+.vj .ck{width:28px;height:28px;border:3px solid #111;display:grid;place-items:center;font-weight:900;flex:none;background:#ffd400}
+.vj .ck.no{background:#fff}.vj .ck.bad{background:#ff6b5e}
+.vj .it b{font-size:16px}.vj .it p{margin:2px 0 0;color:#444;font-size:13px}
+.vj .r{background:#fff;border-left:3px solid #111;padding:28px;font-family:var(--mono);font-size:13px;display:grid;gap:8px;align-content:start}
+.vj .r h2{margin:0 0 6px;font-family:var(--font);font-size:20px}
+.vj .ln{display:flex;justify-content:space-between;gap:10px;border-bottom:2px dotted #999;padding-bottom:6px}
+.vj .big{background:#111;color:#ffd400;padding:14px;font-size:18px;font-weight:700;text-align:center;margin-top:10px;border:0}
+.vj .btn2{background:#fff;color:#111;border:3px solid #111;padding:11px;font-weight:700}
+@media(max-width:900px){.vj{grid-template-columns:1fr}.vj .r{border-left:0;border-top:3px solid #111}}
+</style>
+
+<div class="bar" role="tablist" aria-label="시안 선택">
+  <b>TableFlow UI 시안 2</b>
+  <button role="tab" data-v="f" aria-pressed="true">F 안내형</button>
+  <button role="tab" data-v="g" aria-pressed="false">G 작업 보드</button>
+  <button role="tab" data-v="h" aria-pressed="false">H 전후 비교</button>
+  <button role="tab" data-v="i" aria-pressed="false">I 대화형</button>
+  <button role="tab" data-v="j" aria-pressed="false">J 체크리스트</button>
+  <span class="note">같은 작업(사원 데이터 옮기기)을 5가지 구조로 표현</span>
+</div>
+
+<section class="v vf" id="f">
+  <div class="top"><span class="logo">TableFlow</span><div class="dots">1 / 3 단계 <i class="on"></i><i></i><i></i></div></div>
+  <div class="stage"><div class="card">
+    <h1>어디에서 어디로<br>옮길까요?</h1>
+    <p>데이터가 있는 곳과 옮겨 놓을 곳을 골라 주세요.</p>
+    <div class="pair">
+      <div class="tile on"><small>원본</small><b>Oracle · HR.EMP</b><small>12,500행 · 4개 컬럼</small></div>
+      <div class="arrow">→</div>
+      <div class="tile on"><small>옮길 곳</small><b>PostgreSQL · TB_EMP</b><small>새 테이블로 만들기</small></div>
+    </div>
+    <div class="sum"><span>✓ 원본 번호(고유번호)를 그대로 유지합니다</span><span>✓ 2,500행씩 6번에 나눠 옮깁니다. 중간에 멈춰도 이어서 할 수 있습니다</span></div>
+    <div class="acts"><button class="btn g x">나중에 하기</button><button class="btn x">다음: 내용 확인하기</button></div>
+  </div></div>
+</section>
+
+<section class="v vg" id="g" hidden>
+  <div class="top"><b>TableFlow</b><span>내 작업 3개</span><button class="new x">+ 새 작업</button></div>
+  <div class="cols">
+    <div class="col"><h3><span>진행 중</span><span>1</span></h3>
+      <div class="job"><b>사원 데이터 옮기기</b><small>Oracle → PostgreSQL · 12,500행</small><div class="bar2"><i style="width:50%"></i></div><small>3 / 6번째 완료 · 6,250행</small><button class="btn x">멈추기</button></div></div>
+    <div class="col"><h3><span>끝남</span><span>1</span></h3>
+      <div class="job"><span class="tag t2">완료</span><b>주문 내역 옮기기</b><small>MySQL → PostgreSQL · 3,200행</small><small>오늘 09:12 · 걸린 시간 8초</small><button class="btn x">결과 보기</button></div></div>
+    <div class="col"><h3><span>멈춤</span><span>1</span></h3>
+      <div class="job"><span class="tag t3">오류</span><b>고객 목록 옮기기</b><small>MariaDB → Oracle · 4번째 묶음에서 멈춤</small><small>앞의 3,000행은 이미 저장되어 있습니다</small><button class="btn p x">이어서 하기</button></div></div>
+  </div>
+</section>
+
+<section class="v vh" id="h" hidden>
+  <div class="top"><b>옮기기 전 확인</b><span>원본과 옮겨질 결과를 나란히 비교합니다</span></div>
+  <div class="sum"><div><i>12,500</i>옮길 행</div><div><i>4</i>컬럼</div><div><i style="color:#0a6b2c">1</i>바뀌는 값 종류</div><div><i style="color:#a11">0</i>오류</div></div>
+  <div class="cmp">
+    <div class="side"><h3>원본 · Oracle HR.EMP</h3><p>지금 있는 데이터</p><div class="wrap-x"><table><thead><tr><th>사번</th><th>이름</th><th>입사일</th><th>급여</th></tr></thead><tbody>
+      <tr><td class="same">001</td><td class="same">김하늘</td><td class="same">2026-01-15</td><td class="del">3500000.00</td></tr>
+      <tr><td class="same">002</td><td class="same">이도윤</td><td class="same">2026-03-02</td><td class="del">4200000.00</td></tr>
+      <tr><td class="same">003</td><td class="same">박서연</td><td class="same">2026-06-18</td><td class="del">3800000.00</td></tr>
+      <tr><td class="same">004</td><td class="same">최민준</td><td class="same">2026-08-09</td><td class="del">4050000.50</td></tr></tbody></table></div></div>
+    <div class="side"><h3>옮긴 뒤 · PostgreSQL TB_EMP</h3><p>급여가 정수로 바뀝니다. 마지막 행은 소수점이 사라집니다</p><div class="wrap-x"><table><thead><tr><th>사번</th><th>이름</th><th>입사일</th><th>급여</th></tr></thead><tbody>
+      <tr><td class="same">001</td><td class="same">김하늘</td><td class="same">2026-01-15</td><td class="add">3500000</td></tr>
+      <tr><td class="same">002</td><td class="same">이도윤</td><td class="same">2026-03-02</td><td class="add">4200000</td></tr>
+      <tr><td class="same">003</td><td class="same">박서연</td><td class="same">2026-06-18</td><td class="add">3800000</td></tr>
+      <tr><td class="same">004</td><td class="same">최민준</td><td class="same">2026-08-09</td><td class="add">4050001</td></tr></tbody></table></div></div>
+  </div>
+  <div class="legend"><span>빨강: 원본 값</span><span>초록: 옮겨질 값</span><span>회색: 그대로</span></div>
+  <div class="act"><button class="btn g x">설정으로 돌아가기</button><button class="btn x">이대로 옮기기</button></div>
+</section>
+
+<section class="v vi" id="i" hidden>
+  <div class="top"><span>TableFlow</span><span style="color:#5a6780;font-weight:400">사원 데이터 옮기기</span></div>
+  <div class="chat">
+    <div class="m bot">안녕하세요. 어떤 데이터를 어디로 옮길까요?<div class="chips"><span class="chip">파일에서 DB로</span><span class="chip">DB에서 파일로</span><span class="chip">DB에서 DB로</span></div></div>
+    <div class="m me">Oracle의 HR.EMP를 PostgreSQL로 옮기고 싶어요</div>
+    <div class="m bot">HR.EMP에는 12,500행, 4개 컬럼이 있습니다. 옮길 곳에 같은 이름의 테이블이 없어서 새로 만들까요?<div class="chips"><span class="chip">새로 만들기</span><span class="chip">다른 테이블 고르기</span></div></div>
+    <div class="m me">새로 만들기</div>
+    <div class="res"><h4>미리 확인 결과 (실제로 옮기지 않았습니다)</h4><div class="wrap-x"><table><thead><tr><th>사번</th><th>이름</th><th>입사일</th><th>급여</th></tr></thead><tbody data-rows></tbody></table></div></div>
+    <div class="m bot">급여 컬럼은 정수로 바뀝니다. 나머지는 문제없습니다. 바로 옮길까요?<div class="chips"><span class="chip">옮기기 시작</span><span class="chip">설정 바꾸기</span></div></div>
+  </div>
+  <div class="input"><div><span>궁금한 점을 입력하세요</span><b>보내기</b></div></div>
+</section>
+
+<section class="v vj" id="j" hidden>
+  <div class="l">
+    <h1>옮기기 전에<br>확인해 주세요</h1>
+    <div class="it"><span class="ck">✓</span><div><b>원본에 연결됨</b><p>Oracle · HR.EMP · 12,500행</p></div></div>
+    <div class="it"><span class="ck">✓</span><div><b>옮길 곳에 연결됨</b><p>PostgreSQL · 새 테이블 TB_EMP를 만듭니다</p></div></div>
+    <div class="it"><span class="ck bad">!</span><div><b>급여 컬럼의 형식이 바뀝니다</b><p>소수점이 있는 값 1건이 반올림됩니다. 괜찮다면 체크해 주세요</p></div></div>
+    <div class="it"><span class="ck no"></span><div><b>이 내용을 확인했습니다</b><p>확인해야 옮기기 버튼이 켜집니다</p></div></div>
+  </div>
+  <div class="r">
+    <h2>작업 요약</h2>
+    <div class="ln"><span>원본</span><span>Oracle HR.EMP</span></div>
+    <div class="ln"><span>옮길 곳</span><span>PostgreSQL TB_EMP</span></div>
+    <div class="ln"><span>행 수</span><span>12,500</span></div>
+    <div class="ln"><span>나눠서 옮기기</span><span>2,500행 × 6번</span></div>
+    <div class="ln"><span>원본 번호 유지</span><span>예</span></div>
+    <div class="ln"><span>예상 시간</span><span>약 20초</span></div>
+    <button class="btn2 x">먼저 미리 확인</button>
+    <div class="big">옮기기 시작</div>
+  </div>
+</section>
+
+<script>
+var D=[["001","김하늘","2026-01-15","3,500,000"],["002","이도윤","2026-03-02","4,200,000"],["003","박서연","2026-06-18","3,800,000"],["004","최민준","2026-08-09","4,050,000"]];
+document.querySelectorAll("tbody[data-rows]").forEach(function(t){t.innerHTML=D.map(function(r){return "<tr>"+r.map(function(c,i){return "<td"+(i==3?' style="text-align:right"':"")+">"+c+"</td>"}).join("")+"</tr>"}).join("")});
+function show(v){document.querySelectorAll(".v").forEach(function(x){x.hidden=x.id!==v});document.querySelectorAll(".bar button").forEach(function(b){b.setAttribute("aria-pressed",b.dataset.v===v)});try{history.replaceState(null,"","#"+v)}catch(e){}}
+document.querySelectorAll(".bar button").forEach(function(b){b.addEventListener("click",function(){show(b.dataset.v)})});
+var h=(location.hash||"").slice(1);if(h&&"fghij".indexOf(h)>-1)show(h);
+</script>
