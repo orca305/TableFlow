@@ -21,6 +21,10 @@ dependencies {
         exclude group: 'commons-logging', module: 'commons-logging' // Spring JCL supplies the logging API.
     }
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'com.h2database:h2' // DB→File 추출 로직의 실제 JDBC 동작 검증용(대상 DBMS 아님)
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
-tasks.named('test') { useJUnitPlatform() }
+tasks.named('test') {
+    useJUnitPlatform()
+    systemProperty 'tableflow.history.file', "${buildDir}/tmp/test-history.jsonl" // 테스트가 data/ 이력을 오염시키지 않도록
+}

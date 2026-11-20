@@ -107,7 +107,7 @@ public class JdbcExplorer {
         if (name == null || name.isBlank() || name.length() > 128 || name.chars().anyMatch(c -> c < 32))
             throw new IllegalArgumentException("조회할 스키마·테이블 이름을 선택해주세요.");
     }
-    static String literalPattern(DatabaseMetaData meta, String value) throws SQLException {
+    public static String literalPattern(DatabaseMetaData meta, String value) throws SQLException {
         String escape = meta.getSearchStringEscape();
         if (escape == null || escape.isEmpty()) {
             if (value.contains("%") || value.contains("_")) throw new Failure(400, "JDBC_PATTERN", "이 드라이버는 해당 이름의 정확한 메타데이터 조회를 지원하지 않습니다.");

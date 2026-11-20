@@ -35,15 +35,18 @@ public class JdbcLoader {
         if(table.rows().isEmpty()) throw new IllegalArgumentException("적재할 데이터가 없습니다.");
         return normalized;
     }
-    public Plan check(Credentials c,Table table,String schema,String name) {
+    public Plan check(Credentials c,Table table,String schema,String name) { return check(c,table,schema,name,Set.of()); }
+    /** keepIdentity: 원본 값을 그대로 넣을 자동 증가(IDENTITY/serial) 대상 컬럼 이름. 비어 있으면 자동 증가 컬럼 매핑을 거부한다. */
+    public Plan check(Credentials c,Table table,String schema,String name,Set<String> keepIdentity) {
         Table output=validate(table,schema,name);
         return explorer.withConnection(c,true,connection->{
-            try { inspect(connection,c.dbms(),schema,name,output); }
+            try { inspect(connection,c.dbms(),schema,name,output,keepIdentity); }
             catch(SQLException e) { throw rejected(e); }
             return new Plan(c.dbms().name(),schema,name,output.rows().size(),included(output).stream().map(Column::targetName).toList());
         });
     }
-    public DatabaseLoader.Result load(Credentials c,Table table,String schema,String name,String requestId) {
+    public DatabaseLoader.Result load(Credentials c,Table table,String schema,String name,String requestId) { return load(c,table,schema,name,requestId,Set.of()); }
+    public DatabaseLoader.Result load(Credentials c,Table table,String schema,String name,String requestId,Set<String> keepIdentity) {
         Table output=validate(table,schema,name); String hash=fingerprint(c,output,schema,name);
         return explorer.withConnection(c,false,connection->{
             if(family(c.dbms())) connection.setCatalog(schema);
@@ -53,14 +56,15 @@ public class JdbcLoader {
                 var previous=receipt(connection,c.dbms(),schema,requestId,hash);
                 if(previous!=null) { connection.rollback(); return previous; }
                 settings(connection,c.dbms(),schema,name);
-                inspect(connection,c.dbms(),schema,name,output);
+                inspect(connection,c.dbms(),schema,name,output,keepIdentity);
                 // Reserve the id inside the same transaction; concurrent retries serialize on its primary key.
                 try(var st=connection.prepareStatement("INSERT INTO "+qualified(c.dbms(),schema,RECEIPTS)+" (request_id,payload_hash,table_name,inserted_rows) VALUES (?,?,?,?)")) {
                     st.setQueryTimeout(20); st.setString(1,requestId);st.setString(2,hash);st.setString(3,name);st.setInt(4,output.rows().size());st.executeUpdate();
                 }
                 var columns=included(output);
                 String names=String.join(",",columns.stream().map(col->quote(c.dbms(),col.targetName())).toList());
-                String sql="INSERT INTO "+qualified(c.dbms(),schema,name)+" ("+names+") VALUES ("+String.join(",",Collections.nCopies(columns.size(),"?"))+")";
+                String override=c.dbms()==Dbms.postgresql && !keepIdentity.isEmpty() ? " OVERRIDING SYSTEM VALUE" : ""; // GENERATED ALWAYS identity도 원본 값 허용
+                String sql="INSERT INTO "+qualified(c.dbms(),schema,name)+" ("+names+")"+override+" VALUES ("+String.join(",",Collections.nCopies(columns.size(),"?"))+")";
                 try(var st=connection.prepareStatement(sql)) {
                     st.setQueryTimeout(20); int batch=0; long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(40);
                     for(var row:output.rows()) {
@@ -94,7 +98,7 @@ public class JdbcLoader {
             }
         }
     }
-    private void inspect(Connection c,Dbms db,String schema,String name,Table table) throws SQLException {
+    private void inspect(Connection c,Dbms db,String schema,String name,Table table,Set<String> keepIdentity) throws SQLException {
         if(family(db)) {
             c.setCatalog(schema); Set<String> keys=new HashSet<>();
             try(var rs=c.getMetaData().getPrimaryKeys(schema,null,RECEIPTS)){while(rs.next())keys.add(rs.getString("COLUMN_NAME").toLowerCase(Locale.ROOT));}
@@ -115,12 +119,15 @@ public class JdbcLoader {
         Map<String,Column> mapped=new HashMap<>();included(table).forEach(col->mapped.put(col.targetName(),col)); Set<String> found=new HashSet<>();
         try(var rs=meta.getColumns(null,pattern(schema,escape),pattern(name,escape),"%")) {
             while(rs.next()) {
+                // Oracle의 COLUMN_DEF는 LONG이라 ResultSet 컬럼 순서대로 읽어야 한다(순서가 바뀌면 ORA-17027).
                 String target=rs.getString("COLUMN_NAME");Column col=mapped.get(target);
+                int type=rs.getInt("DATA_TYPE"),size=rs.getInt("COLUMN_SIZE"),scale=rs.getInt("DECIMAL_DIGITS");
                 boolean required=rs.getInt("NULLABLE")==DatabaseMetaData.columnNoNulls;
-                boolean generated="YES".equals(rs.getString("IS_GENERATEDCOLUMN"));boolean identity="YES".equals(rs.getString("IS_AUTOINCREMENT"));
-                if(col==null){if(required && rs.getString("COLUMN_DEF")==null && !generated && !identity)throw schema("필수 대상 컬럼 매핑이 누락되었습니다: "+target);continue;}
-                found.add(target);int type=rs.getInt("DATA_TYPE"),size=rs.getInt("COLUMN_SIZE"),scale=rs.getInt("DECIMAL_DIGITS");
-                if(generated || identity || !compatible(col.dataType(),type,db))throw schema("대상 컬럼 자료형·생성 컬럼 여부를 확인해주세요: "+target);
+                String columnDefault=rs.getString("COLUMN_DEF");
+                boolean identity="YES".equals(rs.getString("IS_AUTOINCREMENT"));boolean generated="YES".equals(rs.getString("IS_GENERATEDCOLUMN"));
+                if(col==null){if(required && columnDefault==null && !generated && !identity)throw schema("필수 대상 컬럼 매핑이 누락되었습니다: "+target);continue;}
+                found.add(target);
+                if(generated || (identity && !keepIdentity.contains(target)) || !compatible(col.dataType(),type,db))throw schema("대상 컬럼 자료형·생성 컬럼 여부를 확인해주세요: "+target);
                 for(var row:table.rows()) {
                     String value=row.cells().get(col.id()).value();
                     if(value==null){if(required)throw schema("대상 DB 필수값이 비어 있습니다: "+target);continue;}
@@ -176,8 +183,10 @@ public class JdbcLoader {
     private static String qualified(Dbms db,String schema,String name){return quote(db,schema)+"."+quote(db,name);}
     private static String pattern(String name,String escape){return name.replace(escape,escape+escape).replace("_",escape+"_").replace("%",escape+"%");}
     private LoadFailure schema(String message){return new LoadFailure(422,"LOAD_SCHEMA",message);}
+    private static final org.slf4j.Logger log=org.slf4j.LoggerFactory.getLogger(JdbcLoader.class);
     private LoadFailure rejected(SQLException e){
         String state=Optional.ofNullable(e.getSQLState()).orElse("");
+        log.warn("적재 거부/실패 sqlState={} vendorCode={} type={}",state,e.getErrorCode(),e.getClass().getSimpleName()); // 메시지에는 데이터 값이 섞일 수 있어 남기지 않는다
         if(state.startsWith("23") || state.startsWith("22") || Set.of(1,1400,1438,12899,2290,3819,4025).contains(e.getErrorCode()))return new LoadFailure(422,"LOAD_REJECTED","DB 제약조건 또는 값 변환에 실패해 전체 적재를 취소했습니다.");
         if(state.startsWith("42") || e.getErrorCode()==942)return schema("대상 테이블·영수증 테이블과 INSERT/SELECT 권한을 확인해주세요.");
         return new LoadFailure(503,"LOAD_FAILED","적재에 실패해 전체 작업을 취소했습니다. 연결·권한·테이블 설정을 확인해주세요.");
