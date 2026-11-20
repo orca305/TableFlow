@@ -53,12 +53,40 @@ public class JdbcReader {
         return explorer.withConnection(credentials, true, connection -> extract(connection, credentials.dbms(), schema, table, columns, size, offset));
     }
 
+    /** 키 기반(keyset) 페이지 커서. after=이전 페이지 마지막 행의 기본 키 값(null이면 처음부터), last=이번 페이지 마지막 행의 기본 키 값. */
+    public static final class Keyset {
+        private final List<Object> after; private List<Object> last;
+        public Keyset(List<Object> after) { this.after = after; this.last = after; }
+        public List<Object> last() { return last; }
+    }
+    public boolean hasPrimaryKey(Credentials credentials, String schema, String table) {
+        return explorer.withConnection(credentials, true, connection -> !primaryKey(connection, credentials.dbms(), schema, table).isEmpty());
+    }
+    /**
+     * 기본 키 기준 정렬 페이지를 OFFSET 없이 읽는다(WHERE 키 &gt; 이전 마지막 키). 청크 위치와 무관하게 비용이 일정하다.
+     * 기본 키가 없으면 IllegalArgumentException. 읽은 뒤 keyset.last()가 다음 호출의 커서가 된다.
+     */
+    public Table readKeyPage(Credentials credentials, String schema, String table, List<String> columns, Keyset keyset, int size) {
+        return explorer.withConnection(credentials, true, connection -> extract(connection, credentials.dbms(), schema, table, columns, size, -1, keyset));
+    }
+    private List<String> primaryKey(Connection connection, Dbms dbms, String schema, String table) throws SQLException {
+        boolean catalogBased = dbms == Dbms.mysql || dbms == Dbms.mariadb;
+        Map<Integer, String> keys = new TreeMap<>();
+        try (var rows = connection.getMetaData().getPrimaryKeys(catalogBased ? schema : null, catalogBased ? null : schema, table)) {
+            while (rows.next()) keys.put(rows.getInt("KEY_SEQ"), rows.getString("COLUMN_NAME"));
+        }
+        return new ArrayList<>(keys.values());
+    }
+
     /** 연결을 직접 받는 핵심 로직. 테스트에서 임의 JDBC 연결로 검증할 수 있도록 분리했다. */
     Table extract(Connection connection, Dbms dbms, String schema, String table, List<String> selected, int limit) throws SQLException {
         return extract(connection, dbms, schema, table, selected, limit, -1);
     }
     /** offset &lt; 0: 정렬 없이 처음 limit행(미리보기·소량 추출). offset &ge; 0: 정렬된 페이지. */
     Table extract(Connection connection, Dbms dbms, String schema, String table, List<String> selected, int limit, long offset) throws SQLException {
+        return extract(connection, dbms, schema, table, selected, limit, offset, null);
+    }
+    Table extract(Connection connection, Dbms dbms, String schema, String table, List<String> selected, int limit, long offset, Keyset keyset) throws SQLException {
         if (limit < 1 || limit > MAX_ROWS) throw new IllegalArgumentException("조회 행 수는 1~" + MAX_ROWS + " 사이여야 합니다.");
         require(schema); require(table);
         boolean catalogBased = dbms == Dbms.mysql || dbms == Dbms.mariadb;
@@ -94,24 +122,43 @@ public class JdbcReader {
         }
 
         // 3) 읽기 전용 SELECT (값은 바인딩할 것이 없고, 식별자는 메타데이터로 검증된 이름만 인용)
-        String sql = "SELECT " + String.join(", ", names.stream().map(n -> quote(dbms, n)).toList()) + " FROM "
+        List<String> keyColumns = keyset == null ? List.of() : primaryKey(connection, dbms, schema, table);
+        if (keyset != null && keyColumns.isEmpty()) throw new IllegalArgumentException("기본 키가 없는 테이블은 키 기반 페이지를 쓸 수 없습니다.");
+        if (keyset != null && keyset.after != null && keyset.after.size() != keyColumns.size())
+            throw new IllegalArgumentException("커서의 키 컬럼 수가 기본 키와 다릅니다.");
+        // 키 값은 맨 뒤에 별칭(TF_KEY_n)을 붙여 덧붙여 읽는다. 선택 컬럼과 겹쳐도 열 이름이 중복되지 않는다(Oracle ORA-00960).
+        List<String> selectList = new ArrayList<>(names.stream().map(n -> quote(dbms, n)).toList());
+        for (int i = 0; i < keyColumns.size(); i++) selectList.add(quote(dbms, keyColumns.get(i)) + " AS " + quote(dbms, "TF_KEY_" + (i + 1)));
+        String sql = "SELECT " + String.join(", ", selectList) + " FROM "
             + quote(dbms, schema) + "." + quote(dbms, table);
-        if (offset >= 0) {
-            List<String> order = new ArrayList<>(); // 기본 키(KEY_SEQ 순) → 없으면 선택한 컬럼 전체
-            Map<Integer, String> keys = new TreeMap<>();
-            try (var rows = meta.getPrimaryKeys(catalogBased ? schema : null, catalogBased ? null : schema, table)) {
-                while (rows.next()) keys.put(rows.getInt("KEY_SEQ"), rows.getString("COLUMN_NAME"));
+        List<Object> binds = new ArrayList<>();
+        if (keyset != null) {
+            if (keyset.after != null) { // (k1,k2) > (a,b) 를 OR 전개: k1>a OR (k1=a AND k2>b) — 튜플 비교를 못 하는 Oracle도 동작
+                List<String> ors = new ArrayList<>();
+                for (int i = 0; i < keyColumns.size(); i++) {
+                    List<String> and = new ArrayList<>();
+                    for (int j = 0; j < i; j++) { and.add(quote(dbms, keyColumns.get(j)) + " = ?"); binds.add(keyset.after.get(j)); }
+                    and.add(quote(dbms, keyColumns.get(i)) + " > ?"); binds.add(keyset.after.get(i));
+                    ors.add("(" + String.join(" AND ", and) + ")");
+                }
+                sql += " WHERE " + String.join(" OR ", ors);
             }
-            (keys.isEmpty() ? names : new ArrayList<>(keys.values())).forEach(name -> order.add(quote(dbms, name)));
+            sql += " ORDER BY " + String.join(", ", keyColumns.stream().map(n -> quote(dbms, n)).toList());
+            sql += dbms == Dbms.oracle ? " FETCH FIRST " + limit + " ROWS ONLY" : " LIMIT " + limit;
+        } else if (offset >= 0) {
+            List<String> order = new ArrayList<>(); // 기본 키(KEY_SEQ 순) → 없으면 선택한 컬럼 전체
+            List<String> keys = primaryKey(connection, dbms, schema, table);
+            (keys.isEmpty() ? names : keys).forEach(name -> order.add(quote(dbms, name)));
             sql += " ORDER BY " + String.join(", ", order);
             sql += dbms == Dbms.oracle ? " OFFSET " + offset + " ROWS FETCH NEXT " + limit + " ROWS ONLY" : " LIMIT " + limit + " OFFSET " + offset;
         } else if (dbms == Dbms.oracle) sql += " FETCH FIRST " + limit + " ROWS ONLY";
         List<Row> rows = new ArrayList<>();
-        try (Statement statement = connection.createStatement()) {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            for (int i = 0; i < binds.size(); i++) statement.setObject(i + 1, binds.get(i));
             statement.setFetchSize(FETCH_SIZE);
             statement.setMaxRows(limit);
             statement.setQueryTimeout(QUERY_TIMEOUT_SECONDS);
-            try (ResultSet rs = statement.executeQuery(sql)) {
+            try (ResultSet rs = statement.executeQuery()) {
                 while (rs.next() && rows.size() < limit) {
                     Map<String, Cell> cells = new LinkedHashMap<>();
                     for (int i = 0; i < tableColumns.size(); i++) {
@@ -119,6 +166,11 @@ public class JdbcReader {
                         cells.put(tableColumns.get(i).id(), new Cell(value, value, null, false));
                     }
                     rows.add(new Row("row_" + (rows.size() + 1), cells));
+                    if (keyset != null) {
+                        List<Object> last = new ArrayList<>();
+                        for (int j = 0; j < keyColumns.size(); j++) last.add(rs.getObject(names.size() + 1 + j));
+                        keyset.last = last;
+                    }
                 }
             }
         }

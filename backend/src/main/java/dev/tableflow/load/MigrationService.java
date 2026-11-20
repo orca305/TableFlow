@@ -139,13 +139,18 @@ public class MigrationService {
         int chunks = (int) ((total + chunkSize - 1) / chunkSize);
         progress.total(chunks, total);
         long inserted = 0; int replayed = 0;
+        // 기본 키가 있으면 OFFSET 대신 키 기반(WHERE 키 > 이전 마지막 키)으로 읽어 뒤쪽 청크도 느려지지 않게 한다. 없으면 기존 OFFSET.
+        boolean keyset = reader.hasPrimaryKey(source, sourceSchema, sourceTable);
+        JdbcReader.Keyset cursor = new JdbcReader.Keyset(null);
         for (int i = 0; i < chunks; i++) {
             if (progress.cancelled())
                 throw new LoadFailure(409, "MIGRATION_CANCELLED", "취소했습니다. 완료된 " + i + "개 청크(" + inserted + "행)는 이미 커밋되어 있으며, 같은 요청으로 다시 실행하면 이어서 진행합니다.");
             long offset = (long) i * chunkSize; int size = (int) Math.min(chunkSize, total - offset);
             DatabaseLoader.Result result;
             try {
-                Table raw = reader.readPage(source, sourceSchema, sourceTable, names, offset, size);
+                Table raw = keyset ? reader.readKeyPage(source, sourceSchema, sourceTable, names, cursor, size)
+                    : reader.readPage(source, sourceSchema, sourceTable, names, offset, size);
+                if (keyset) cursor = new JdbcReader.Keyset(cursor.last());
                 if (raw.rows().size() != size)
                     throw new LoadFailure(409, "SOURCE_CHANGED", "실행 중 원본 행 수가 바뀌었습니다. 원본이 변하지 않는 상태에서 같은 요청으로 다시 실행해주세요.");
                 // 청크 요청 ID는 (작업 요청 ID, 순번)에서 결정적으로 만든다 → 같은 작업을 다시 실행하면 완료된 청크는 영수증으로 건너뛴다.

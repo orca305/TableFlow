@@ -61,6 +61,27 @@ class JdbcReaderTests {
         assertThrows(JdbcExplorer.Failure.class, () -> reader.extract(connection, Dbms.postgresql, "PUBLIC", "EMP\" --", null, 10));
     }
 
+    @Test void keysetPagesMatchOffsetPagesForCompositeKey() throws Exception {
+        try (var st = connection.createStatement()) {
+            st.execute("CREATE TABLE \"ORD\" (\"A\" INTEGER, \"B\" VARCHAR(10), \"V\" INTEGER, PRIMARY KEY (\"A\",\"B\"))");
+            for (int a = 1; a <= 4; a++) for (String b : List.of("x", "y", "z")) st.execute("INSERT INTO \"ORD\" VALUES (" + a + ",'" + b + "'," + (a * 10) + ")");
+        }
+        List<String> viaKeyset = new ArrayList<>();
+        var cursor = new JdbcReader.Keyset(null);
+        while (true) {
+            Table page = reader.extract(connection, Dbms.postgresql, "PUBLIC", "ORD", List.of("A", "V"), 5, -1, cursor); // 키 컬럼 A가 선택 컬럼과 겹쳐도 동작(Oracle ORA-00960 회귀)
+            if (page.rows().isEmpty()) break;
+            page.rows().forEach(r -> viaKeyset.add(r.cells().get("col_2").value()));
+            cursor = new JdbcReader.Keyset(cursor.last());
+        }
+        List<String> viaOffset = new ArrayList<>();
+        for (long off = 0; off < 12; off += 5)
+            reader.extract(connection, Dbms.postgresql, "PUBLIC", "ORD", List.of("A", "V"), 5, off).rows().forEach(r -> viaOffset.add(r.cells().get("col_2").value()));
+        assertEquals(12, viaKeyset.size());
+        assertEquals(viaOffset, viaKeyset);
+        assertThrows(IllegalArgumentException.class, () -> reader.extract(connection, Dbms.postgresql, "PUBLIC", "ORD", List.of("A", "V"), 5, -1, new JdbcReader.Keyset(List.of(1))));
+    }
+
     @Test void identifierNormalizationAndQuoting() {
         var used = new HashSet<String>();
         assertEquals("EMP_NO", JdbcReader.uniqueIdentifier("EMP_NO", used));
