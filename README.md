@@ -1,8 +1,31 @@
 # TableFlow
 
-Excel/CSV/PDF/이미지의 표를 검토·수정하고 Oracle/MySQL INSERT SQL 또는 XLSX로 출력하는 ETL 워크스페이스입니다. **Spring Boot ETL 엔진 + FastAPI 로컬 OCR**에서 실제 파싱, 인식, 정규화, 검증, 출력을 처리합니다.
+Excel/CSV/PDF/이미지와 관계형 DB(Oracle·PostgreSQL·MySQL·MariaDB)의 표를 검토·수정하고 INSERT SQL, CSV/XLSX, 또는 다른 DB로 내보내는 ETL 워크스페이스입니다. **Spring Boot ETL 엔진 + FastAPI 로컬 OCR**에서 실제 파싱, 인식, 정규화, 검증, 출력을 처리합니다.
 
-현재 상태: **파일/OCR 추출·변환부터 MySQL 실제 적재까지 구현 및 로컬 검증 완료**. 실제 적재는 로컬 MySQL, Oracle은 SQL 파일 생성을 지원합니다. 외부 OCR은 모의 HTTP 검증이며 공개 배포는 미실시입니다.
+## 현재 상태 (2026-11-20)
+
+| 데이터 흐름 | 상태 | 검증 |
+|---|---|---|
+| File → SQL (Oracle/PostgreSQL/MySQL/MariaDB) | 구현 | 단위·E2E·실제 HTTP 다운로드 |
+| File → File (CSV/XLSX) | 구현 | E2E |
+| File → DB (4종 DBMS) | 구현 | **실제 서버 4종 통합 테스트 통과**(연결·메타데이터·적재·재시도·충돌·롤백) |
+| DB → File / DB → SQL | 구현(최대 10,000행) | 단위(H2) + 화면 계약 E2E(mock) + **실제 브라우저·PostgreSQL E2E(CSV·XLSX)** |
+| DB → DB | 구현(**최대 1,000,000행**, 10,000행 초과는 청크·백그라운드·이어서 실행) | **실서버 8개 경로 + 실제 브라우저 Oracle→PostgreSQL 통과**. 대용량 청크(실서버 4경로, 브라우저 12,500행), 원본 키 보존·시퀀스 재동기화(실서버 6경로), 대상 테이블 자동 생성(7경로), FK·자동 증가 경고/거부(4경로) |
+| 작업 이력 | 구현 | 서버 JSON Lines, 비밀번호·호스트·데이터 미저장 |
+
+검증한 서버: PostgreSQL 17.12, MySQL 8.4.13, MariaDB 11.8.9, Oracle Free 23.26.3(모두 일회용 Docker 컨테이너). 외부 OCR은 모의 HTTP 검증이며 공개 배포·원격 CI는 미실시입니다. FK·인덱스·기본값 복제와 이전 순서 자동 계산은 아직 없습니다(FK는 경고만, 자동 증가는 옵션으로 원본 키 보존). 대용량 이전은 청크 단위 부분 성공이며(이어서 실행 가능) OFFSET 방식이라 매우 큰 테이블 뒤쪽 청크는 느릴 수 있고 12,500행 규모까지만 검증했습니다. 테이블 자동 생성은 PostgreSQL 외에는 DDL이 롤백되지 않아 적재 실패 시 빈 테이블이 남을 수 있습니다. [검증 결과 상세](docs/TEST_RESULTS.md)
+
+### 화면
+
+| 샘플 CSV → 검증 → SQL/Excel/CSV 출력 | DB → DB 이전 점검(Oracle → PostgreSQL, Dry-run) |
+|---|---|
+| ![워크스페이스](docs/screenshots/01-workspace-validated.png) | ![DB→DB](docs/screenshots/02-db-to-db-dry-run.png) |
+
+| 새 테이블 만들기(CREATE TABLE 미리보기) | 대용량(12,500행) 청크 이전 완료 + 작업 이력 |
+|---|---|
+| ![테이블 생성](docs/screenshots/03-db-to-db-create-table-preview.png) | ![대용량](docs/screenshots/04-db-to-db-chunked-done-history.png) |
+
+스크린샷은 `SCREENSHOTS=true npx playwright test tests/screenshots.spec.ts`로 다시 만들 수 있습니다(두 번째 화면은 실제 DB 컨테이너 필요). 비밀번호는 마스킹된 입력란이며 값은 저장·노출되지 않습니다.
 
 ## 시작하기
 
@@ -61,7 +84,13 @@ cd ..
 - 기본 타입 추정, 셀 편집, 원본 값 보존, 대상 컬럼 이름·포함 여부·자료형·필수값·길이·정밀도 설정
 - 정수/소수/날짜/일시/불리언 정규화, 셀 오류·중복 행·식별자 검증
 - Oracle/PostgreSQL/MySQL/MariaDB INSERT SQL 다운로드, XLSX·CSV 다운로드
-- 실제 MySQL 배치 INSERT, 대상 스키마 검사, 전체 트랜잭션·롤백, 영수증 기반 중복 요청 방지
+- 실제 DB 배치 INSERT(Oracle/PostgreSQL/MySQL/MariaDB), 대상 스키마 검사, 전체 트랜잭션·롤백, 영수증 기반 중복 요청 방지
+- DB 연결·스키마/테이블/컬럼/PK 탐색, 읽기 전용 DB 행 추출(컬럼 선택, 최대 10,000행) → 기존 검토·CSV/Excel/SQL 출력
+- 대상 DB 컬럼 기준 자동 매핑 추천(이름 일치·업무 용어·유사 이름, 모호하면 미확정, 적용은 사용자 확인 후)
+- DB → DB 이전: 컬럼 매핑 → Dry-run → 동의 → 트랜잭션 적재. 원본이 한도보다 많거나 시간 정보가 사라지는 변환은 거부. 대상 테이블이 없으면 원본 정의로 `CREATE TABLE`(미리보기 후 동의), FK·자동 증가 컬럼은 경고·거부
+- 대용량 DB → DB(10,000행 초과): 기본 키 순서로 청크(5,000행)마다 별도 트랜잭션·영수증 적재, 백그라운드 작업·진행률·취소, 실패 시 같은 요청으로 이어서 실행(완료된 청크는 건너뜀)
+- 원본 키 보존 옵션: 자동 증가 대상 컬럼에 원본 값을 넣고 적재 후 시퀀스 재동기화(PostgreSQL `setval`, Oracle `LIMIT VALUE`, MySQL/MariaDB 자동). Oracle `GENERATED ALWAYS`는 명확히 거부
+- 작업 이력: 적재·이전의 성공/재시도/실패를 서버에 기록(`data/job-history.jsonl`, git 제외, 비밀번호·호스트·데이터 미저장)
 - 요청·업로드 제한, XLSX 압축 해제 크기 제한, 문자열 안전 처리, Excel 수식 실행 방지
 
 ## 3분 시연
@@ -115,6 +144,20 @@ npm run test:e2e
 
 실제 MySQL 테스트는 위 DB를 준비하고 `TABLEFLOW_TEST_MYSQL=true`, `TABLEFLOW_MYSQL_PASSWORD`를 설정한 뒤 실행합니다. DB를 사용하지 않는 기본 테스트에서는 4건의 DB 통합 테스트와 브라우저 DB 적재 2건을 명시적으로 건너뜁니다. 전체 실행 명령은 [DB 적재 문서](docs/database-loading.md)에 있습니다.
 
+## 실제 DB 통합 테스트
+
+TableFlow 전용 일회용 컨테이너(`infra/jdbc/compose.yml`, 루프백 15432/13316/13317/11521)에서만 실행하세요. 운영·개인 DB로 포트를 바꾸지 마세요.
+
+```powershell
+cd C:\dev\TableFlow
+docker compose -f infra/jdbc/compose.yml --profile oracle up -d --wait --wait-timeout 600
+cd backend
+$env:TABLEFLOW_TEST_JDBC='true'; $env:TABLEFLOW_TEST_JDBC_DBMS='oracle,postgresql,mysql,mariadb'
+.\gradlew.bat test --tests '*JdbcLoadIntegrationTests' --tests '*MigrationIntegrationTests' --tests '*MigrationBulkIntegrationTests' --rerun-tasks
+```
+
+브라우저 DB→DB E2E: `TABLEFLOW_TEST_JDBC=true TABLEFLOW_JDBC_ENABLED=true TABLEFLOW_JDBC_LOAD_ENABLED=true npx playwright test tests/migration.spec.ts tests/db-to-file.spec.ts`. **Docker Desktop이 시작 중 크래시**(`sailor-ingest.sock` / `engine.sock` 오류 1920)하면 [복구 절차](docs/TEST_RESULTS.md)를 보세요(이미지·볼륨은 삭제하지 않습니다).
+
 ## 구조
 
 ```text
@@ -140,8 +183,6 @@ scripts/     Windows 실행 보조 스크립트
 - XLSX 출력은 값들을 문자열 셀로 기록해 수식 실행과 숫자 반올림을 방지합니다.
 - 실제 DB 적재는 MySQL에서 검증했습니다. 대상은 미리 준비한 트리거 없는 InnoDB 테이블이어야 합니다. 원격 인증/권한, Oracle 직접 적재, UPDATE/DELETE/DDL/스케줄링은 지원하지 않습니다.
 
-이번 변경은 Phase 1을 우선했습니다. 범용 JDBC 연결 테스트·메타데이터 탐색을 구현했습니다(실서버 미검증). DB 추출/이관은 미구현입니다. [DBMS별 지원 범위](docs/DATABASE_SUPPORT.md) · [이번 검증 결과](docs/TEST_RESULTS.md)
+[DBMS별 지원 범위](docs/DATABASE_SUPPORT.md) · [이번 검증 결과](docs/TEST_RESULTS.md)
 
-상세: [개발 현황](docs/DEVELOPMENT_STATUS.md) · [API](docs/api.md) · [아키텍처](docs/architecture.md) · [요구사항](docs/requirements.md)
-
-멀티 DB 적재 추가: 대상 연결을 사용한 Oracle/PostgreSQL/MySQL/MariaDB INSERT를 구현했습니다. 실제 DB 검증은 디스크 부족/Docker 장애로 대기 중입니다. [사용법·제약·실제 테스트](docs/jdbc-loading.md)
+상세: [개발 현황](docs/DEVELOPMENT_STATUS.md) · [API](docs/api.md) · [아키텍처](docs/architecture.md) · [요구사항](docs/requirements.md) · [멀티 DB 적재·실제 테스트](docs/jdbc-loading.md)

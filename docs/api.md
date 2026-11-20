@@ -87,3 +87,26 @@ Credentials: `{dbms:oracle|postgresql|mysql|mariadb,host,port,database,username,
 ## 공통 JDBC 적재 API
 
 `/connections/drivers` 응답에 `loadEnabled`가 추가됐습니다. `POST /connections/load/check`와 `POST /connections/load`는 `{connection:Credentials,table:Table,schema,tableName,requestId?,confirmed?}`를 받습니다. check 응답은 `{dbms,schema,tableName,rows,columns}`입니다. load에는 UUID requestId와 confirmed=true 및 OCR일 때 `X-TableFlow-Reviewed:true`가 필요합니다. 응답은 기존 `{requestId,tableName,insertedRows,replayed}`입니다. 서버는 적재 시 다시 구조를 검사하며 클라이언트의 check 결과를 신뢰하지 않습니다. 적재 기본 비활성화 오류는 JDBC_LOAD_DISABLED(503)입니다. 제약조건/구조/재시도 오류는 LOAD_REJECTED/LOAD_SCHEMA(422), LOAD_REQUEST_CONFLICT(409), LOAD_OUTCOME_UNKNOWN/LOAD_FAILED(503)입니다. [적재 설정](jdbc-loading.md).
+
+## DB 행 추출 · DB→DB 이전 API
+
+모두 `/connections/*`와 같은 로컬 요청·Origin·호스트 allowlist 제한을 받으며 비밀번호는 응답·로그에 남지 않습니다.
+
+| Method | 경로 | 요청 | 응답 |
+|---|---|---|---|
+| POST | `/connections/read` | `{connection,schema,table,columns?,limit(1~10000)}` | `Table`(source.type=`database`, extraction_method=`jdbc`) |
+| POST | `/connections/migrate/check` | `MigrateRequest` | `{sourceDbms,targetDbms,source,target,sourceRows,rows,columns:[{source,target,sourceType,targetType,conversion}],notes,createsTable,ddl:string[],warnings:string[],bulk,chunks,chunkSize}` (쓰기 없음. `warnings`는 외래 키·자동 증가 컬럼·누락된 필수 컬럼 안내) |
+| POST | `/connections/migrate` | `MigrateRequest` + `requestId`(UUID) + `confirmed:true` (limit ≤ 10,000) | `{requestId,tableName,insertedRows,replayed,notes:string[],chunks:0,replayedChunks:0}` |
+| POST | `/connections/migrate/jobs` | `MigrateRequest` + `requestId` + `confirmed:true` (대용량) | `{id,state:queued\|running\|succeeded\|failed\|cancelled,totalRows,doneRows,totalChunks,doneChunks,replayedChunks,errorCode,message,startedAt,finishedAt,notes}` — 같은 `requestId`로 실행 중이면 새로 시작하지 않고 상태를 반환, 실패·취소 후 같은 `requestId`로 재제출하면 완료된 청크는 건너뛰고 이어서 진행 |
+| GET | `/connections/migrate/jobs/{id}` | 없음 | 위와 같은 상태(없으면 404 `JOB_NOT_FOUND`) |
+| DELETE | `/connections/migrate/jobs/{id}` | 없음 | 다음 청크 전에 멈추도록 요청(이미 커밋된 청크는 되돌리지 않음) |
+
+`/connections/read`는 임의 SQL을 받지 않으며 메타데이터로 확인된 컬럼만 인용해 읽기 전용 SELECT를 실행합니다(`setMaxRows`, fetch size 500, 30초 타임아웃). BLOB·바이너리 등은 400으로 거부합니다. 결과 `Table`은 `/exports/csv|excel|sql`에 그대로 사용할 수 있습니다.
+
+`MigrateRequest`: `{source:Credentials,sourceSchema,sourceTable,target:Credentials,targetSchema,targetTable,mappings:[{source,target}],limit(1~1000000),createTable?,preserveKeys?}`. `limit`이 10,000 이하이면 한 트랜잭션(동기), **10,000을 넘으면 대용량(청크) 점검·`/migrate/jobs` 실행**입니다. `preserveKeys:true`이면 자동 증가 대상 컬럼에 원본 값을 넣고 적재 후 시퀀스를 재동기화합니다. `createTable:true`이면 대상 테이블·영수증 테이블이 없을 때 `CREATE TABLE`만 실행합니다(Dry-run 응답의 `ddl`로 미리 확인, 이미 있으면 생성하지 않음). 원본 행 수가 `limit`보다 많으면 일부만 이전하지 않고 400으로 거부합니다. 시간 정보가 있는 일시를 DATE 컬럼으로 옮기면 400(손실 방지)입니다. 적재는 기존 공통 JDBC 적재 경로(트랜잭션·영수증·전체 롤백)를 사용하며 적재가 비활성화이면 JDBC_LOAD_DISABLED(503)입니다.
+
+| Method | 경로 | 요청 | 응답 |
+|---|---|---|---|
+| GET | `/connections/history?limit=50` | 없음 | `{enabled,items:[{id,kind:load\|migrate,requestId,startedAt,durationMs,status:success\|replayed\|failed,source,target,rows,errorCode,message}]}` 최신순, 최대 200건 |
+
+작업 이력에는 비밀번호·호스트·사용자명·행 데이터가 포함되지 않습니다. 대상 자동 증가 컬럼에 값을 넣는 매핑은 400(`INVALID_INPUT`)입니다.
