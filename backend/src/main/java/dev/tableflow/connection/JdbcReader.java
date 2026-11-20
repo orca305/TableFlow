@@ -221,7 +221,7 @@ public class JdbcReader {
         return candidate;
     }
 
-    static String quote(Dbms dbms, String identifier) {
+    public static String quote(Dbms dbms, String identifier) {
         char q = dbms == Dbms.mysql || dbms == Dbms.mariadb ? '`' : '"';
         return q + identifier.replace(String.valueOf(q), "" + q + q) + q;
     }

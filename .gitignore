@@ -15,3 +15,6 @@ test-results/
 
 # 로컬 작업 이력(서버가 생성)
 **/data/job-history.jsonl
+**/data/connections.json
+**/data/connections.json.tmp
+**/data/connections.key

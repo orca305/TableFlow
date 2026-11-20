@@ -12,6 +12,8 @@ import java.util.*;
 public class JdbcExplorer {
     private final boolean enabled;
     private final Set<String> hosts;
+    private ConnectionStore store;
+    @org.springframework.beans.factory.annotation.Autowired(required = false) void setStore(ConnectionStore store) { this.store = store; }
     public JdbcExplorer(@Value("${tableflow.jdbc.enabled:false}") boolean enabled,
                         @Value("${tableflow.jdbc.allowed-hosts:localhost,127.0.0.1}") String allowedHosts) {
         this.enabled = enabled;
@@ -28,7 +30,12 @@ public class JdbcExplorer {
         @Min(1) @Max(65535) int port,
         @NotBlank @Pattern(regexp="[A-Za-z0-9_][A-Za-z0-9_.$-]{0,127}") String database,
         @NotBlank @Size(max=128) String username, @NotNull @Size(max=1024) String password,
-        boolean tls) {
+        boolean tls, @Pattern(regexp="[0-9a-fA-F-]{36}") String savedId) {
+        /** 저장된 연결을 쓰지 않는 일반 접속. */
+        public Credentials(Dbms dbms, String host, int port, String database, String username, String password, boolean tls) {
+            this(dbms, host, port, database, username, password, tls, null);
+        }
+        /** 비밀번호가 비어 있고 savedId가 있으면 저장된 연결의 비밀번호를 서버에서 복호화해 사용한다. */
         @Override public String toString() { return "Credentials[redacted]"; }
     }
     public record DriverInfo(Dbms dbms, int defaultPort, boolean available, String version) {}
@@ -44,7 +51,7 @@ public class JdbcExplorer {
     public record ServerInfo(String product, String serverVersion, String driver, String driverVersion) {}
     public record Items<T>(List<T> items, boolean truncated) {}
     public record ColumnInfo(String name, String type, int jdbcType, int size, int scale,
-                             boolean nullable, boolean primaryKey, boolean autoIncrement, int position) {}
+                             boolean nullable, boolean primaryKey, boolean autoIncrement, int position, boolean foreignKey) {}
     public ServerInfo test(Credentials credentials) {
         return connected(credentials, connection -> {
             var meta = connection.getMetaData();
@@ -89,6 +96,10 @@ public class JdbcExplorer {
             try (var rows = meta.getPrimaryKeys(catalog, namespace, table)) {
                 while (rows.next() && keys.size() < 1000) keys.add(rows.getString("COLUMN_NAME"));
             }
+            Set<String> foreign = new HashSet<>();
+            try (var rows = meta.getImportedKeys(catalog, namespace, table)) { // 이 테이블이 다른 테이블을 참조하는 컬럼
+                while (rows != null && rows.next() && foreign.size() < 1000) foreign.add(rows.getString("FKCOLUMN_NAME"));
+            } catch (SQLException ignored) { /* 드라이버가 지원하지 않으면 FK 표시만 생략 */ }
             List<ColumnInfo> items = new ArrayList<>();
             try (var rows = meta.getColumns(catalog, namespace == null ? null : literalPattern(meta, namespace), literalPattern(meta, table), "%")) {
                 while (rows.next()) {
@@ -96,7 +107,7 @@ public class JdbcExplorer {
                     String name = rows.getString("COLUMN_NAME");
                     items.add(new ColumnInfo(name, rows.getString("TYPE_NAME"), rows.getInt("DATA_TYPE"), rows.getInt("COLUMN_SIZE"),
                         rows.getInt("DECIMAL_DIGITS"), rows.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls,
-                        keys.contains(name), "YES".equals(rows.getString("IS_AUTOINCREMENT")), rows.getInt("ORDINAL_POSITION")));
+                        keys.contains(name), "YES".equals(rows.getString("IS_AUTOINCREMENT")), rows.getInt("ORDINAL_POSITION"), foreign.contains(name)));
                 }
             }
             return new Items<>(items, false);
@@ -123,8 +134,14 @@ public class JdbcExplorer {
             case mariadb -> "jdbc:mariadb://" + c.host() + ":" + c.port() + "/" + c.database();
         };
     }
+    private String password(Credentials c) {
+        if (c.password() != null && !c.password().isEmpty()) return c.password();
+        if (c.savedId() == null) return "";
+        if (store == null) throw new Failure(503, "CONNECTIONS_DISABLED", "서버에서 연결 저장이 비활성화되어 있습니다. 비밀번호를 입력해주세요.");
+        return store.passwordFor(c);
+    }
     Properties properties(Credentials c) {
-        Properties props = new Properties(); props.setProperty("user", c.username()); props.setProperty("password", c.password());
+        Properties props = new Properties(); props.setProperty("user", c.username()); props.setProperty("password", password(c));
         if (c.dbms() == Dbms.oracle) {
             props.setProperty("oracle.net.CONNECT_TIMEOUT", "5000"); props.setProperty("oracle.net.OUTBOUND_CONNECT_TIMEOUT", "5000");
             props.setProperty("oracle.jdbc.ReadTimeout", "10000"); props.setProperty("oracle.net.ssl_server_dn_match", "true");

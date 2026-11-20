@@ -8,7 +8,7 @@ import org.springframework.web.servlet.config.annotation.*;
 public class WebConfig implements WebMvcConfigurer {
     @Value("${tableflow.frontend-origin}") private String origin;
     @Override public void addCorsMappings(CorsRegistry registry) {
-        registry.addMapping("/api/v1/**").allowedOrigins(origin).allowedMethods("GET", "POST", "OPTIONS")
+        registry.addMapping("/api/v1/**").allowedOrigins(origin).allowedMethods("GET", "POST", "DELETE", "OPTIONS")
             .allowedHeaders("Content-Type", "X-TableFlow-Reviewed").exposedHeaders("Content-Disposition");
     }
 }

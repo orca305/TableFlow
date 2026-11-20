@@ -90,7 +90,7 @@ class MigrationBulkIntegrationTests {
             // 2) 4번째 청크에서 실패: 앞선 3개 청크(3,000행)는 커밋, 메시지에 재개 방법 안내
             String id=UUID.randomUUID().toString(); var first=new Recorder(0);
             var failure=assertThrows(LoadFailure.class,()->migration.runBulk(src,sSchema,"TF_BULK_SRC",tgt,tSchema,"TF_BULK_DST",map,100000,false,false,id,first));
-            assertTrue(failure.getMessage().contains("청크 4/6") && failure.getMessage().contains("3000행"),failure.getMessage());
+            assertTrue(failure.getMessage().contains("분할 4/6회차") && failure.getMessage().contains("3000행"),failure.getMessage());
             assertEquals(3,first.doneChunks); assertEquals(3000,scalar(t,"SELECT COUNT(*) FROM "+tTable));
 
             // 3) 원인(원본의 긴 값) 수정 후 같은 요청 ID로 재실행: 앞선 3개 청크는 건너뛰고 이어서 완료, 중복 없음
@@ -113,6 +113,15 @@ class MigrationBulkIntegrationTests {
             assertEquals("MIGRATION_CANCELLED",cancelled.code); assertEquals(2000,scalar(t,"SELECT COUNT(*) FROM "+tTable));
             var resumed=migration.runBulk(src,sSchema,"TF_BULK_SRC",tgt,tSchema,"TF_BULK_DST",map,100000,false,false,id2,new Recorder(0));
             assertEquals(2,resumed.replayedChunks()); assertEquals(ROWS,scalar(t,"SELECT COUNT(*) FROM "+tTable));
+
+            // 5-1) 작업별 분할 단위: 이번 작업만 2,500행씩(3회). 허용 범위(100~10,000) 밖의 값은 보정한다.
+            var custom=migration.check(src,sSchema,"TF_BULK_SRC",tgt,tSchema,"TF_BULK_DST",map,100000,false,false,2500);
+            assertEquals(3,custom.chunks()); assertEquals(2500,custom.chunkSize());
+            var clamped=migration.check(src,sSchema,"TF_BULK_SRC",tgt,tSchema,"TF_BULK_DST",map,100000,false,false,10);
+            assertEquals(100,clamped.chunkSize()); assertEquals(55,clamped.chunks());
+            exec(t,"DELETE FROM "+tTable);
+            var customRun=migration.runBulk(src,sSchema,"TF_BULK_SRC",tgt,tSchema,"TF_BULK_DST",map,100000,false,false,UUID.randomUUID().toString(),new Recorder(0),2500);
+            assertEquals(3,customRun.chunks()); assertEquals(ROWS,customRun.insertedRows()); assertEquals(ROWS,scalar(t,"SELECT COUNT(*) FROM "+tTable));
 
             // 6) 백그라운드 작업: 진행률과 완료 상태, 같은 ID 중복 제출은 새로 시작하지 않는다
             exec(t,"DELETE FROM "+tTable); String id3=UUID.randomUUID().toString();
