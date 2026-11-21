@@ -1,53 +1,101 @@
 # TableFlow
 
-Excel/CSV/PDF/이미지와 관계형 DB(Oracle·PostgreSQL·MySQL·MariaDB)의 표를 검토·수정하고 INSERT SQL, CSV/XLSX, 또는 다른 DB로 내보내는 ETL 워크스페이스입니다. **Spring Boot ETL 엔진 + FastAPI 로컬 OCR**에서 실제 파싱, 인식, 정규화, 검증, 출력을 처리합니다.
+파일(CSV·Excel·PDF·이미지)과 관계형 DB(Oracle · PostgreSQL · MySQL · MariaDB)를 **원본**과 **대상**으로 삼아 표 데이터를 검토·변환·이관하는 ETL 워크스페이스입니다.
 
-## 현재 상태 (2026-11-20)
+- **파일 → SQL/파일/DB**: 파싱, 이미지·스캔 PDF는 로컬 OCR, 검증 후 INSERT SQL·CSV·XLSX로 내보내거나 DB에 적재
+- **DB → DB 이관**: 4종 DBMS를 서로 오가며 이관. 대용량은 분할 적재, 중단되면 같은 요청으로 **재개**
+- **일괄 이관 · 값 변환 · 행 조건 · 사후 검증 · 스케줄**까지 갖춘 마이그레이션 도구
 
-| 데이터 흐름 | 상태 | 검증 |
-|---|---|---|
-| File → SQL (Oracle/PostgreSQL/MySQL/MariaDB) | 구현 | 단위·E2E·실제 HTTP 다운로드 |
-| File → File (CSV/XLSX) | 구현 | E2E |
-| File → DB (4종 DBMS) | 구현 | **실제 서버 4종 통합 테스트 통과**(연결·메타데이터·적재·재시도·충돌·롤백) |
-| DB → File / DB → SQL | 구현(최대 10,000행) | 단위(H2) + 화면 계약 E2E(mock) + **실제 브라우저·PostgreSQL E2E(CSV·XLSX)** |
-| DB → DB | 구현(**최대 1,000,000행**, 10,000행 초과는 청크·백그라운드·이어서 실행) | **실서버 8개 경로 + 실제 브라우저 Oracle→PostgreSQL 통과**. 대용량 청크(실서버 4경로, 브라우저 12,500행), 원본 키 보존·시퀀스 재동기화(실서버 6경로), 대상 테이블 자동 생성(7경로), FK·자동 증가 경고/거부(4경로) |
-| 작업 이력 | 구현 | 서버 JSON Lines, 비밀번호·호스트·데이터 미저장 |
+스택: Spring Boot 3.5 (Java 21) · Next.js 16 / React 19 · FastAPI + RapidOCR
 
-검증한 서버: PostgreSQL 17.12, MySQL 8.4.13, MariaDB 11.8.9, Oracle Free 23.26.3(모두 일회용 Docker 컨테이너). 외부 OCR은 모의 HTTP 검증이며 공개 배포·원격 CI는 미실시입니다. FK·인덱스·기본값 복제와 이전 순서 자동 계산은 아직 없습니다(FK는 경고만, 자동 증가는 옵션으로 원본 키 보존). 대용량 이전은 청크 단위 부분 성공이며(이어서 실행 가능) OFFSET 방식이라 매우 큰 테이블 뒤쪽 청크는 느릴 수 있고 12,500행 규모까지만 검증했습니다. 테이블 자동 생성은 PostgreSQL 외에는 DDL이 롤백되지 않아 적재 실패 시 빈 테이블이 남을 수 있습니다. [검증 결과 상세](docs/TEST_RESULTS.md)
+> **사용 전제.** 서버에 로그인·권한 관리가 없습니다. 개인 PC나 신뢰할 수 있는 내부망에서 쓰는 도구이며, 인터넷에 그대로 공개하면 안 됩니다. DB 기능은 기본값이 꺼짐이고, 공개 데모에서는 파일 변환만 노출하는 구성을 권장합니다. 공개 배포는 아직 하지 않았습니다.
 
-### 화면
+## 화면
 
-| 샘플 CSV → 검증 → SQL/Excel/CSV 출력 | DB → DB 이전 점검(Oracle → PostgreSQL, Dry-run) |
+| 샘플 CSV → 검증 → SQL/Excel/CSV 출력 | DB → DB 이관 사전 점검 (Oracle → PostgreSQL) |
 |---|---|
 | ![워크스페이스](docs/screenshots/01-workspace-validated.png) | ![DB→DB](docs/screenshots/02-db-to-db-dry-run.png) |
 
-| 새 테이블 만들기(CREATE TABLE 미리보기) | 대용량(12,500행) 청크 이전 완료 + 작업 이력 |
+| 새 테이블 만들기 (CREATE TABLE 미리보기) | 대용량 분할 이관 완료 + 작업 이력 |
 |---|---|
 | ![테이블 생성](docs/screenshots/03-db-to-db-create-table-preview.png) | ![대용량](docs/screenshots/04-db-to-db-chunked-done.png) |
 
-스크린샷은 `SCREENSHOTS=true npx playwright test tests/screenshots.spec.ts`로 다시 만들 수 있습니다(두 번째 화면은 실제 DB 컨테이너 필요). 비밀번호는 마스킹된 입력란이며 값은 저장·노출되지 않습니다.
+화면은 왼쪽 메뉴의 **DB 이관 · 일괄 이관 · 파일 변환 · 스케줄 · 작업 이력 · 설정**으로 나뉩니다. 스크린샷은 `SCREENSHOTS=true npx playwright test tests/screenshots.spec.ts`로 다시 만들 수 있습니다(DB 화면은 실제 DB 컨테이너 필요).
+
+## 주요 기능
+
+### 이관 (DB → DB)
+- **컬럼 매핑**: 이름·업무 용어·유사도로 자동 추천(모호하면 미확정, 적용은 사용자 확인 후). 대상 타입·길이·정밀도 직접 지정
+- **사전 점검**: 실제로 쓰기 전에 행 수, 타입 변환, 거부 사유, 생성될 DDL을 보여 주고 동의를 받은 뒤 적재
+- **대상 테이블 자동 생성**: 인덱스·기본값·외래 키 복제 옵션, 부모 테이블 이관 순서 계산(순환 감지)
+- **분할 적재와 재개**: 기본 키 기준 keyset 읽기로 분할(기본 5,000행)마다 별도 트랜잭션과 적재 영수증을 남깁니다. 실패·중단 시 같은 요청으로 이어서 실행하며 완료된 분할은 건너뜁니다. 서버를 재시작해도 작업 목록이 남습니다
+- **원본 키 보존**: 자동 증가 컬럼에 원본 값을 넣고 시퀀스를 재동기화(PostgreSQL `setval`, Oracle, MySQL/MariaDB)
+- **행 조건(WHERE)과 컬럼 선택**: 입력을 검증해 DML/DDL·주석·세미콜론·`UNION` 등을 차단합니다
+- **값 변환 규칙**: 값 치환, 계산식 등. 안전한 평가기를 사용하며 임의 코드는 실행하지 않습니다
+- **이관 후 검증**: 원본·대상 건수와 집계(체크섬) 비교
+- **일괄 이관**: 여러 테이블·스키마를 외래 키 순서로 통째 이관(최대 200개), 중단 후 재개
+- **스케줄**: 매일 정해진 시각 또는 일정 간격으로 자동 실행, 실행 때마다 대상을 비우고 다시 적재하는 모드. 비밀번호를 저장한 연결만 사용 가능
+
+### 파일 변환
+- CSV(UTF-8/BOM, MS949, EUC-KR, 구분자 자동), XLSX(시트·헤더 행 선택, 수식 원문 보존), PDF 텍스트 표(최대 20페이지)
+- 이미지·스캔 PDF는 **로컬 OCR**(RapidOCR + ONNX Runtime, 한글/영문). 셀별 신뢰도와 원본 대조 후 검토 확인
+- 타입 추정, 셀 편집, 정규화(정수·소수·날짜·불리언), 필수값·길이·중복 검증
+- Oracle/PostgreSQL/MySQL/MariaDB INSERT SQL, XLSX, CSV 다운로드, DB 직접 적재
+
+### 안전장치
+- 비밀번호는 Git·브라우저 저장소·로그·이력에 남기지 않습니다. 사용자가 **비밀번호 저장**을 선택한 연결만 서버 로컬에 AES-256-GCM으로 암호화해 저장하며, 키는 브라우저로 내려보내지 않습니다
+- 모든 SQL은 PreparedStatement 바인딩과 식별자 인용을 사용합니다. 적재 영수증으로 같은 요청의 중복 적재를 막습니다
+- 요청·업로드 크기, XLSX 압축 해제량, 요청 빈도 제한. CSV/Excel 수식 주입 방지
+- 외부 OCR은 서버 허용과 파일별 동의가 모두 있어야 하며, 로컬 OCR이 실패해도 자동으로 외부 전송하지 않습니다
+
+## 구조
+
+```text
+frontend/    Next.js 16 · React 19 · TypeScript · Tailwind 4
+backend/     Java 21 · Spring Boot 3.5 · Gradle · JDBC · POI · Commons CSV · PDFBox
+ai-service/  FastAPI · Pydantic · RapidOCR · ONNX Runtime · PDFium
+infra/       실제 DB 통합 테스트용 일회용 컨테이너(Oracle·PostgreSQL·MySQL·MariaDB)
+docs/        아키텍처 · API · 테스트 결과 · 인수인계
+scripts/     Windows 실행 보조 스크립트
+```
+
+설계 요약은 [아키텍처](docs/architecture.md), 설계 근거와 알려진 한계는 [인수인계 문서](docs/HANDOFF.md)에 있습니다.
+
+## 검증 현황
+
+| 구분 | 결과 |
+|---|---|
+| 백엔드 단위·통합 | 139개, 실패 0, 건너뜀 4 (실서버 포함 실행 기준) |
+| 브라우저 E2E (Playwright) | 실서버 DB 포함 30 통과 · 6 건너뜀(로컬 OCR 환경 필요) |
+| 실서버 이관 조합 | Oracle→PostgreSQL, PostgreSQL→Oracle, MySQL→MariaDB, MariaDB→PostgreSQL |
+| 대용량 | Oracle→PostgreSQL 100만 행 41.4초(약 24,200행/초), 분할마다 걸린 시간이 거의 일정. 5개 컬럼, 백엔드 `-Xmx768m` 기준 |
+| 원격 CI (GitHub Actions) | 성공. 단, CI에는 DB 컨테이너가 없어 **실서버 통합·DB E2E는 로컬에서만** 실행됩니다 |
+
+검증 서버: PostgreSQL 17, MySQL 8.4, MariaDB 11.8, Oracle Free 23(모두 일회용 Docker 컨테이너). 건너뛴 테스트는 검증으로 세지 않았습니다. 상세와 재현 방법은 [테스트 결과](docs/TEST_RESULTS.md)에 있습니다.
+
+### 알려진 한계
+- 인증·권한 없음(위 사용 전제 참고). 스케줄러는 서버가 켜져 있는 동안에만 동작하고 서버 시간대를 따릅니다. 증분 이관·실행 결과 알림은 없습니다
+- 일괄 이관은 테이블별 컬럼 매핑·변환·행 조건을 지정할 수 없고(전체 컬럼 자동 매핑), 수백 개 테이블의 사전 점검은 느립니다
+- MySQL·MariaDB·Oracle은 DDL이 롤백되지 않아 새 테이블 생성 뒤 적재가 실패하면 빈 테이블이 남을 수 있습니다(PostgreSQL은 롤백)
+- 순환 외래 키는 안내만 하고 자동 처리하지 않습니다. 기본값 복제는 리터럴·불리언·현재 시각만 지원합니다
+- 변환 규칙에 날짜 포맷·정규식·조건(CASE)이 없고, 변환한 컬럼은 이관 후 값 비교에서 제외됩니다
+- PDF/OCR은 페이지당 한 개의 정방향 표와 첫 행 헤더를 전제로 합니다. 외부 OCR 공급자는 모의 HTTP 계약만 검증했습니다
+- SQL Server·SQLite 등 다른 DBMS는 아직 지원하지 않습니다
+
+전체 목록과 우선순위는 [인수인계 문서 §4](docs/HANDOFF.md)에 있습니다.
 
 ## 시작하기
 
-필수 환경: **JDK 21**, **Node.js 20.9 이상** (검증: Node 24), **Python 3.13** (이번 검증 환경). Gradle은 저장소의 wrapper를 사용합니다.
+필수 환경: **JDK 21**, **Node.js 20.9 이상**, (OCR 사용 시) **Python 3.13**. Gradle은 저장소의 wrapper를 씁니다.
 
-첫 번째 PowerShell 터미널:
+첫 번째 터미널 — 백엔드(포트 8080):
 
 ```powershell
 cd C:\dev\TableFlow
-# 이 PC에서는 설치된 JDK 21을 자동 탐색합니다. 다른 PC에서는 JAVA_HOME을 설정하세요.
-.\scripts\backend.ps1
+.\scripts\backend.ps1        # 설치된 JDK 21을 자동 탐색. 다른 PC에서는 JAVA_HOME을 설정하세요
 ```
 
-직접 실행할 때:
-
-```powershell
-$env:JAVA_HOME='C:\Users\JBWOO\.jdks\openjdk-21.0.2'
-cd C:\dev\TableFlow\backend
-.\gradlew.bat bootRun
-```
-
-두 번째 터미널:
+두 번째 터미널 — 프런트엔드(포트 3100):
 
 ```powershell
 cd C:\dev\TableFlow\frontend
@@ -55,13 +103,22 @@ npm ci
 npm run dev
 ```
 
-- 화면: <http://localhost:3100> (다른 프로젝트와의 포트 충돌 방지)
-- API 상태: <http://localhost:8080/api/v1/health>
-- 종료: 각 터미널에서 `Ctrl+C`
+- 화면 <http://localhost:3100> · API 상태 <http://localhost:8080/api/v1/health>
+- Linux/macOS: `JAVA_HOME`을 JDK 21로 설정하고 `cd backend && bash gradlew bootRun`
+- 처음 쓴다면 화면의 **샘플 데이터로 시작**으로 파일 변환 흐름을 바로 체험할 수 있습니다
 
-Linux/macOS: `JAVA_HOME`과 `PATH`를 JDK 21로 설정한 뒤 `cd backend && bash gradlew bootRun`을 실행합니다.
+### DB 기능 켜기
+DB 연결·이관은 기본이 꺼져 있습니다. 로컬에서만 켜세요.
 
-이미지/스캔 PDF에는 세 번째 터미널에서 OCR 서비스도 실행하세요:
+```powershell
+$env:TABLEFLOW_JDBC_ENABLED='true'; $env:TABLEFLOW_JDBC_LOAD_ENABLED='true'
+.\scripts\backend.ps1
+```
+
+설정 항목과 권한·롤백·재시도 안내는 [DB 적재 문서](docs/database-loading.md)와 [JDBC 문서](docs/jdbc-loading.md)를 보세요.
+
+### OCR 켜기 (이미지·스캔 PDF)
+세 번째 터미널에서 OCR 서비스를 실행합니다. 최초 준비 때 한글 모델을 내려받으며, 이후 추론은 로컬에서만 실행됩니다.
 
 ```powershell
 cd C:\dev\TableFlow\ai-service
@@ -72,51 +129,11 @@ cd ..
 .\scripts\ocr.ps1 -Provider local
 ```
 
-최초 준비 시 한글 모델을 다운로드할 수 있습니다. 사용자 파일은 업로드하지 않으며 이후 추론은 로컬에서 실행됩니다. Provider를 생략하면 고정 테스트 데이터를 반환하는 **mock**입니다. Linux/macOS: `cd ai-service; TABLEFLOW_OCR_PROVIDER=local .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000`.
-
-## 구현 기능
-
-- CSV: UTF-8/BOM, MS949, EUC-KR, 쉼표·세미콜론·탭·파이프 구분자, 인용부호와 줄바꿈
-- XLSX: 시트 선택, 헤더 행 선택, 날짜 셀, 수식 원문 보존
-- PDF: 텍스트 좌표 기반 표 추출, 최대 20페이지, 페이지별 표 선택·편집 내용 보존
-- PNG/JPEG/스캔 PDF: RapidOCR + ONNX Runtime 실제 로컬 추론, 한글/영문·숫자 샘플 검증
-- OCR 출처·페이지·셀별 신뢰도·원본 확인, 검토 확인 후 다운로드, 타임아웃 시 프로세스 종료
-- 기본 타입 추정, 셀 편집, 원본 값 보존, 대상 컬럼 이름·포함 여부·자료형·필수값·길이·정밀도 설정
-- 정수/소수/날짜/일시/불리언 정규화, 셀 오류·중복 행·식별자 검증
-- Oracle/PostgreSQL/MySQL/MariaDB INSERT SQL 다운로드, XLSX·CSV 다운로드
-- 실제 DB 배치 INSERT(Oracle/PostgreSQL/MySQL/MariaDB), 대상 스키마 검사, 전체 트랜잭션·롤백, 영수증 기반 중복 요청 방지
-- DB 연결·스키마/테이블/컬럼/PK 탐색, 읽기 전용 DB 행 추출(컬럼 선택, 최대 10,000행) → 기존 검토·CSV/Excel/SQL 출력
-- 대상 DB 컬럼 기준 자동 매핑 추천(이름 일치·업무 용어·유사 이름, 모호하면 미확정, 적용은 사용자 확인 후)
-- DB → DB 이전: 컬럼 매핑 → Dry-run → 동의 → 트랜잭션 적재. 원본이 한도보다 많거나 시간 정보가 사라지는 변환은 거부. 대상 테이블이 없으면 원본 정의로 `CREATE TABLE`(미리보기 후 동의), FK·자동 증가 컬럼은 경고·거부
-- 대용량 DB → DB(10,000행 초과): 기본 키 순서로 청크(5,000행)마다 별도 트랜잭션·영수증 적재, 백그라운드 작업·진행률·취소, 실패 시 같은 요청으로 이어서 실행(완료된 청크는 건너뜀)
-- 원본 키 보존 옵션: 자동 증가 대상 컬럼에 원본 값을 넣고 적재 후 시퀀스 재동기화(PostgreSQL `setval`, Oracle `LIMIT VALUE`, MySQL/MariaDB 자동). Oracle `GENERATED ALWAYS`는 명확히 거부
-- 작업 이력: 적재·이전의 성공/재시도/실패를 서버에 기록(`data/job-history.jsonl`, git 제외, 비밀번호·호스트·데이터 미저장)
-- 요청·업로드 제한, XLSX 압축 해제 크기 제한, 문자열 안전 처리, Excel 수식 실행 방지
-
-## 3분 시연
-
-1. 화면에서 **샘플 데이터로 시작**을 누릅니다. 실제 CSV 파서로 데이터를 불러옵니다.
-2. **컬럼 매핑**에서 사원번호→`EMP_NO`(문자열), 이름→`EMP_NM`(문자열), 입사일→`HIRE_DT`(날짜), 급여→`SALARY`(소수)로 설정합니다.
-3. 이름을 필수값으로 설정하고 미리보기에서 첫 번째 이름을 지운 뒤 검증 오류를 확인합니다.
-4. 이름을 복구하고 **데이터 검증**을 눌러 급여의 쉼표가 제거되는 것을 확인합니다.
-5. 원하는 DBMS로 SQL을 내려받고, 대상 선택을 Excel 또는 CSV로 바꿔 파일도 내려받습니다.
-
-OCR 시연: 화면의 **이미지 샘플** 다운로드 → 업로드 → 로컬 OCR 출처/신뢰도 확인 → 수정/컬럼 타입 설정 → 검증 → 원본 대조 검토 확인 → SQL/Excel 다운로드. PDF 샘플은 두 페이지의 표를 선택하며 편집할 수 있습니다. 스캔 샘플: `frontend/public/samples/table-scan.pdf`.
-
-## MySQL 실제 적재 시작
-
-Docker Desktop 실행 후 `.env.example`을 `.env`로 복사하고 비밀번호를 각각 임의 값으로 변경하세요. DB는 기존 프로젝트와 분리하여 `127.0.0.1:3307`에서 실행합니다.
-
-```powershell
-cd C:\dev\TableFlow
-docker compose up -d --wait
-. .\scripts\enable-local-db.ps1
-.\scripts\backend.ps1
-```
-
-화면에서 샘플 컬럼 매핑·검증 → **데이터베이스 적재**를 선택하고 대상 확인 → 스키마 검사 → 실제 적재 동의 → 실행합니다. 기본은 비활성화이며 DB 비밀번호는 서버에만 유지합니다. 실제 적재는 로컬 접근만 허용하고 공개 배포에서는 노출하지 않습니다. [설정·권한·롤백·재시도 안내](docs/database-loading.md)
+Provider를 생략하면 고정 데이터를 돌려주는 mock이 실행됩니다. 자세한 운영은 [OCR 문서](docs/ocr.md)에 있습니다.
 
 ## 테스트 실행
+
+실서버 없이 돌리는 기본 검증:
 
 ```powershell
 cd C:\dev\TableFlow\backend
@@ -129,60 +146,33 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-실제 OCR을 포함한 전체 검증:
+`java`가 JDK 21을 가리키도록 `PATH`를 설정하세요. 이 기본 실행에서는 실제 DB·로컬 OCR 테스트를 **건너뜁니다**(검증이 아닌 skipped로 집계).
 
-```powershell
-cd C:\dev\TableFlow\ai-service
-$env:TABLEFLOW_TEST_LOCAL_OCR='true'
-.\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe benchmark_ocr.py
-cd ..\frontend
-npm run test:e2e
-```
-
-플래그를 생략하면 E2E의 실제 OCR 4건을 건너뜁니다. 전체 E2E는 JAR·Next.js·로컬 OCR 서비스를 자동 실행하거나 기존 서버를 사용합니다. `java`가 JDK 21을 가리키도록 `PATH`를 설정하세요. GitHub Actions에도 같은 흐름을 정의했으며 원격 CI 결과는 아직 없습니다.
-
-실제 MySQL 테스트는 위 DB를 준비하고 `TABLEFLOW_TEST_MYSQL=true`, `TABLEFLOW_MYSQL_PASSWORD`를 설정한 뒤 실행합니다. DB를 사용하지 않는 기본 테스트에서는 4건의 DB 통합 테스트와 브라우저 DB 적재 2건을 명시적으로 건너뜁니다. 전체 실행 명령은 [DB 적재 문서](docs/database-loading.md)에 있습니다.
-
-## 실제 DB 통합 테스트
-
-TableFlow 전용 일회용 컨테이너(`infra/jdbc/compose.yml`, 루프백 15432/13316/13317/11521)에서만 실행하세요. 운영·개인 DB로 포트를 바꾸지 마세요.
+실제 DB 통합 테스트는 TableFlow 전용 일회용 컨테이너(`infra/jdbc/compose.yml`, 루프백 포트 15432/13316/13317/11521)에서만 실행하세요. 운영·개인 DB로 포트를 바꾸지 마세요. 컨테이너의 계정·비밀번호는 테스트 전용 값입니다.
 
 ```powershell
 cd C:\dev\TableFlow
 docker compose -f infra/jdbc/compose.yml --profile oracle up -d --wait --wait-timeout 600
 cd backend
 $env:TABLEFLOW_TEST_JDBC='true'; $env:TABLEFLOW_TEST_JDBC_DBMS='oracle,postgresql,mysql,mariadb'
-.\gradlew.bat test --tests '*JdbcLoadIntegrationTests' --tests '*MigrationIntegrationTests' --tests '*MigrationBulkIntegrationTests' --rerun-tasks
+.\gradlew.bat test --rerun-tasks
 ```
 
-브라우저 DB→DB E2E: `TABLEFLOW_TEST_JDBC=true TABLEFLOW_JDBC_ENABLED=true TABLEFLOW_JDBC_LOAD_ENABLED=true npx playwright test tests/migration.spec.ts tests/db-to-file.spec.ts`. **Docker Desktop이 시작 중 크래시**(`sailor-ingest.sock` / `engine.sock` 오류 1920)하면 [복구 절차](docs/TEST_RESULTS.md)를 보세요(이미지·볼륨은 삭제하지 않습니다).
-
-## 구조
-
-```text
-frontend/    Next.js 16 · React 19 · TypeScript · Tailwind 4
-backend/     Java 21 · Spring Boot 3.5 · Gradle 8.8 · POI · Commons CSV · PDFBox · MySQL JDBC
-infra/       MySQL 샘플 대상/영수증 스키마 (Docker Compose)
-ai-service/  FastAPI · Pydantic · RapidOCR · ONNX Runtime · PDFium
-docs/        아키텍처 · API · 요구사항 · 개발 현황
-scripts/     Windows 실행 보조 스크립트
-```
+브라우저 DB E2E와 로컬 OCR 포함 전체 실행 명령, Docker 복구 절차는 [인수인계 문서 §2](docs/HANDOFF.md)와 [테스트 결과](docs/TEST_RESULTS.md)를 따르세요.
 
 ## 설정과 제한
 
-- 프런트엔드: `frontend/.env.example`을 `.env.local`로 복사하여 `NEXT_PUBLIC_API_URL` 설정
-- 백엔드: `PORT`(8080), `TABLEFLOW_FRONTEND_ORIGIN`(`http://localhost:3100`), `TABLEFLOW_OCR_URL`(`http://127.0.0.1:8000`), `TABLEFLOW_OCR_TIMEOUT_SECONDS`(45)
-- OCR: `TABLEFLOW_OCR_PROVIDER`(mock), `TABLEFLOW_OCR_LANGUAGE`(korean, 대안 multilingual), `TABLEFLOW_OCR_TIMEOUT_SECONDS`(40). 괄호는 기본값입니다.
-- 외부 OCR은 서버 허용과 파일별 전송 동의가 모두 필요하며 로컬 실패 시 외부로 자동 전환하지 않습니다. [OCR 운영·검증](docs/ocr.md)
-- 최대 파일 10MB, 10,000 데이터 행, 100열, 셀 32,767자. XLSX 압축 해제 합계 32MB / ZIP 항목 2,000개
-- PDF 최대 20페이지, OCR 이미지 최대 2,000만 픽셀입니다. 페이지당 한 개의 정방향 표와 첫 행 헤더를 전제로 하며 제목/병합/회전/다중 표/불규칙한 레이아웃은 정확한 구조를 보장하지 않습니다.
-- JSON 요청 최대 32MB, IP당 POST 120회/분, 동시 처리 4건. 프록시 앞에서는 실제 IP/요청 제한을 배포 계층에서도 설정해야 합니다.
-- 원본 파일과 편집 중 표는 서버에 영구 저장하지 않습니다. 새로고침 시 화면 작업이 사라지며, 성공적으로 적재한 DB 행과 영수증은 대상 DB에 남습니다.
-- 빈 값과 공백만 있는 값은 NULL입니다. 모든 비어 있지 않은 값이 같은 형식일 때만 타입을 추정하고, 선행 0이 있는 값은 문자열로 유지합니다. 추정 결과는 사용자가 수정할 수 있습니다.
-- XLSX 출력은 값들을 문자열 셀로 기록해 수식 실행과 숫자 반올림을 방지합니다.
-- 실제 DB 적재는 MySQL에서 검증했습니다. 대상은 미리 준비한 트리거 없는 InnoDB 테이블이어야 합니다. 원격 인증/권한, Oracle 직접 적재, UPDATE/DELETE/DDL/스케줄링은 지원하지 않습니다.
+- 프런트엔드: `frontend/.env.example`을 `.env.local`로 복사해 `NEXT_PUBLIC_API_URL` 설정
+- 백엔드: `PORT`(8080), `TABLEFLOW_FRONTEND_ORIGIN`(`http://localhost:3100`), `TABLEFLOW_OCR_URL`(`http://127.0.0.1:8000`), `TABLEFLOW_JDBC_ENABLED`, `TABLEFLOW_JDBC_LOAD_ENABLED`, `TABLEFLOW_SECRET_KEY`(저장 연결 암호화 키. 없으면 `data/connections.key`를 자동 생성). 괄호는 기본값입니다
+- OCR: `TABLEFLOW_OCR_PROVIDER`(mock), `TABLEFLOW_OCR_LANGUAGE`(korean), `TABLEFLOW_OCR_TIMEOUT_SECONDS`
+- 파일 최대 10MB, 10,000 데이터 행, 100열. PDF 최대 20페이지, OCR 이미지 최대 2,000만 픽셀. JSON 요청 최대 32MB, IP당 POST 120회/분, 동시 처리 4건
+- 파일 변환 중인 표는 서버에 영구 저장하지 않으며 새로고침하면 화면 작업이 사라집니다. 서버에는 작업 이력(`data/job-history.jsonl`), 작업 목록(`data/jobs.json`), 스케줄(`data/schedules.json`), 저장 연결이 남고 모두 Git에서 제외됩니다
+- 대상 DB에 적재된 행과 영수증은 롤백하지 않는 한 그대로 남습니다
 
-[DBMS별 지원 범위](docs/DATABASE_SUPPORT.md) · [이번 검증 결과](docs/TEST_RESULTS.md)
+## 문서
 
-**이어서 개발한다면 먼저 [인수인계 문서](docs/HANDOFF.md)** · 상세: [개발 현황](docs/DEVELOPMENT_STATUS.md) · [API](docs/api.md) · [아키텍처](docs/architecture.md) · [요구사항](docs/requirements.md) · [멀티 DB 적재·실제 테스트](docs/jdbc-loading.md)
+[인수인계(먼저 읽기)](docs/HANDOFF.md) · [API](docs/api.md) · [아키텍처](docs/architecture.md) · [DBMS별 지원 범위](docs/DATABASE_SUPPORT.md) · [테스트 결과](docs/TEST_RESULTS.md) · [개발 현황](docs/DEVELOPMENT_STATUS.md) · [요구사항](docs/requirements.md)
+
+## 라이선스
+
+[MIT License](LICENSE)

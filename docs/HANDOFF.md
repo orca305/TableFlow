@@ -179,3 +179,9 @@ npx playwright test tests/migration.spec.ts tests/db-to-file.spec.ts    # 기대
 - `ConnectionPicker`: 연결을 새로 저장하면 입력란의 비밀번호를 비우고 savedId로 연결한다(이전에는 저장 직후 자동 재확인이 비밀번호 방식으로 바뀌어 스케줄에 쓸 수 없었다).
 - 한계: 서버 프로세스가 켜져 있는 동안에만 실행(OS 스케줄러 아님), 시간대는 서버 기준, 증분(변경분만) 이관은 없다(행 조건으로 범위를 좁힐 수 있으나 replace는 대상 전체를 비운다). 실행 결과 알림(메일 등)은 없다.
 - 검증: `ScheduleIntegrationTests`(등록 규칙, 시각 경과 시 실행, 전체 교체, 일괄 스케줄, 중지; MySQL→MariaDB 실서버), Playwright `schedule.spec.ts`.
+
+## 13. 2026-11-22 공개 준비 문서 정리
+- README를 현재 기능(4종 DB 이관·일괄 이관·변환·검증·스케줄) 기준으로 다시 썼다. 사용 전제(인증 없음, 내부망·로컬 도구), 검증 현황(실서버 vs CI), 알려진 한계를 앞부분에 명시했다.
+- `LICENSE`(MIT, 저작권자 표기 "TableFlow contributors")를 추가했다. 저작권자 이름·라이선스 종류는 소유자가 확정해 바꿔도 된다.
+- `docs/architecture.md`에 현재 DB 이관 구성(다이어그램)을 추가하고 낡은 문구("스케줄러 없음", "JDBC 미구현")를 고쳤다. `docs/DEVELOPMENT_STATUS.md` 상단에 기록 시점 안내를 달았다.
+- 아직 안 한 공개 준비: 신규 기능(일괄 이관·스케줄·변환) 스크린샷, 접근 보호(인증), 공개 배포, 처리량 추가 측정. 커밋 이력에 테스트용 비밀번호가 있는지 점검은 별도.

@@ -25,7 +25,7 @@ flowchart LR
 - TableEngine: 규칙 기반 정규화, 필수·자료형·길이·정밀도·중복·셀 키 정합성 검사입니다.
 - TableExporter: Oracle/MySQL/PostgreSQL/MariaDB enum dialect로 인용·리터럴을 분리합니다. 출력 전에 반드시 재검증합니다.
 - 프런트엔드는 표를 메모리에 유지합니다. 50행 단위로 표시하며 편집 시 검증 결과를 무효화합니다.
-- 작업 이력용 내부 DB/인증/스케줄러/큐는 없습니다. 추가 승인된 실제 적재 대상 MySQL과 중복 방지용 영수증은 사용합니다.
+- 인증·권한은 없습니다(로컬·내부망 도구 전제). 별도 메시지 큐나 내부 DB는 없고, 작업 목록·이력·스케줄·저장 연결은 서버 로컬 파일(`data/`, Git 제외)에 두며 중복 방지용 영수증만 대상 DB에 남깁니다. DB→DB 이관·일괄 이관·스케줄은 아래 「2026-11-22 현재 구성」을 보세요.
 
 ## 보안과 경계
 
@@ -49,4 +49,32 @@ MySQL 직접 적재는 DatabaseLoader에서 기존 공통 검증 후 JDBC 바인
 
 ## 2026-11-19 워크스페이스 개편
 
-파일 → Canonical Table → 정규화/검증 → 파일 출력 흐름을 유지했습니다. 범용 플러그인 프레임워크를 미리 도입하지 않고 기존 Dialect enum을 확장했습니다. 검증 severity와 중복 정책은 TableEngine에서 공유하고, 모든 파일 출력은 서버에서 재검증합니다. 화면의 이름 제안은 헤더 규칙 기반이며 실제 DB 스키마와 매칭한 결과가 아닙니다. JDBC 범용 연결·메타데이터 탐색·DB 소스 추출은 아직 구현하지 않았습니다. 기존 MySQL 적재의 PreparedStatement/트랜잭션/서버 설정 경계는 유지합니다.
+파일 → Canonical Table → 정규화/검증 → 파일 출력 흐름을 유지했습니다. 범용 플러그인 프레임워크를 미리 도입하지 않고 기존 Dialect enum을 확장했습니다. 검증 severity와 중복 정책은 TableEngine에서 공유하고, 모든 파일 출력은 서버에서 재검증합니다. 화면의 이름 제안은 헤더 규칙 기반이며 실제 DB 스키마와 매칭한 결과가 아닙니다. (당시 기준이며 JDBC 연결·탐색·DB 소스 추출은 이후 구현했습니다. 아래 현재 구성 참고.) 기존 MySQL 적재의 PreparedStatement/트랜잭션/서버 설정 경계는 유지합니다.
+
+## 2026-11-22 현재 구성 (DB 이관)
+
+위 흐름에 DB를 원본/대상으로 쓰는 경로가 추가되었습니다. 전체 구현 상태와 한계는 [인수인계 문서](HANDOFF.md)가 기준입니다.
+
+```mermaid
+flowchart LR
+    UI[Next.js 화면] --> C[ConnectionController /api/v1/connections]
+    C --> X[JdbcExplorer 연결·메타데이터]
+    C --> M[MigrationService 사전 점검·매핑·DDL]
+    M --> R[JdbcReader keyset 읽기 + RowFilter]
+    M --> V[ValueTransform 값 변환]
+    M --> W[분할 적재 + 적재 영수증]
+    W --> T[(대상 DB)]
+    R --> S[(원본 DB)]
+    C --> J[MigrationJobs 백그라운드 작업 + JobStore]
+    C --> B[BatchMigration 일괄 이관 · 외래 키 순서]
+    C --> K[MigrationVerifier 건수·집계 비교]
+    SCH[ScheduleService 15초 주기 확인] --> J
+    SCH --> B
+```
+
+- **분할 적재·재개**: 기본 키 기준 keyset 읽기, 분할마다 별도 트랜잭션과 영수증(`tableflow_load_receipts`)을 커밋합니다. 요청 ID가 같으면 완료된 분할을 건너뛰고 이어서 실행합니다. 작업 목록은 `data/jobs.json`에 영속화되어 서버를 재시작해도 재개할 수 있습니다.
+- **일괄 이관**: 테이블 목록을 외래 키 의존 순서(위상 정렬)로 처리하고, 테이블별 요청 ID를 결정적으로 만들어 중단 후 재개합니다.
+- **행 조건**: `RowFilter`가 WHERE 문자열을 검증(주석·세미콜론·DML/DDL·`UNION` 등 차단)한 뒤 원본 쿼리에만 붙입니다.
+- **스케줄**: `ScheduleService`가 15초마다 도래한 스케줄을 확인해 같은 작업 경로로 실행합니다. 서버 프로세스가 켜져 있는 동안에만 동작합니다.
+- **저장 연결**: 사용자가 비밀번호 저장을 선택한 연결만 `ConnectionStore`가 AES-256-GCM으로 암호화해 `data/connections.json`에 둡니다. 스케줄·재개는 이 연결(`savedId`)만 사용하며 비밀번호는 정의에 저장하지 않습니다.
+- **경계**: DB 기능은 기본 비활성(`tableflow.jdbc.enabled`, `load-enabled`)이고 접속 가능 호스트는 allowlist로 제한합니다.
