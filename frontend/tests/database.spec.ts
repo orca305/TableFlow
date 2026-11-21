@@ -67,6 +67,7 @@ test("browser file → MySQL: 신규 테이블 생성 후 적재", async ({ page
     await connect(load, "대상", MYSQL);
     await load.getByLabel("대상 스키마", { exact: true }).selectOption("tableflow");
     await load.getByLabel("신규 테이블 이름").fill("TB_FILE_NEW");
+    await load.getByRole("group", { name: "기본 키 컬럼" }).getByLabel("EMP_NO", { exact: true }).check();
     await load.getByRole("button", { name: "대상·스키마 점검" }).click();
     await expect(load.getByText(/적재하면 아래 테이블이 새로 생성됩니다/)).toBeVisible();
     expect(mysql(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='tableflow' AND table_name='TB_FILE_NEW'`).trim()).toBe("0"); // 점검은 만들지 않는다
@@ -74,6 +75,7 @@ test("browser file → MySQL: 신규 테이블 생성 후 적재", async ({ page
     await load.getByRole("button", { name: "DB 적재", exact: true }).click();
     await expect(page.getByText(/적재 완료: 3행/).first()).toBeVisible();
     expect(mysql(`SELECT COUNT(*) FROM TB_FILE_NEW`).trim()).toBe("3");
+    expect(mysql(`SELECT GROUP_CONCAT(column_name) FROM information_schema.key_column_usage WHERE table_schema='tableflow' AND table_name='TB_FILE_NEW' AND constraint_name='PRIMARY'`).trim()).toBe("EMP_NO"); // 선택한 기본 키
   } finally {
     try { mysql(`DROP TABLE IF EXISTS TB_FILE_NEW`); } catch {}
   }

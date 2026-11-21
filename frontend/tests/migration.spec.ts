@@ -237,3 +237,69 @@ test("real browser: 비밀번호 저장 — 저장하면 입력 없이 연결되
   await again.getByRole("button", { name: "삭제 확인" }).click();
   await expect.poll(async () => (await (await page.request.get("http://localhost:18080/api/v1/connections/saved")).text())).not.toContain("UI 테스트 Oracle");
 });
+
+test("real browser: 신규 테이블의 대상 길이를 직접 지정하면 그 길이로 만들어진다", async ({ page }) => {
+  pg(`DROP TABLE IF EXISTS tf_ui_typ; DROP TABLE IF EXISTS tableflow_load_receipts;`);
+  try {
+    await confirmSource(page, "TF_UI_SRC");
+    const dst = await connectTarget(page);
+    await dst.getByLabel("신규 테이블 이름").fill("tf_ui_typ");
+    await dst.getByRole("button", { name: "대상 확정", exact: true }).click();
+    const review = page.getByRole("region", { name: "검토" });
+    await review.getByLabel("EMP_NM 길이 또는 정밀도", { exact: true }).fill("60");
+    await expect(review.getByText(/매핑 4건/)).toBeVisible();
+    await expect(review.getByText("PK", { exact: true }).first()).toBeVisible(); // EMP_NO는 원본의 기본 키
+    const run = runPanel(page);
+    await run.getByRole("button", { name: "사전 점검" }).click();
+    await run.getByRole("checkbox", { name: /DB INSERT에 동의/ }).check();
+    await run.getByRole("button", { name: "이관 시작" }).click();
+    await expect(page.getByText("이관 완료: 3행", { exact: true })).toBeVisible();
+    expect(pg("SELECT character_maximum_length FROM information_schema.columns WHERE table_name='tf_ui_typ' AND column_name='emp_nm';").trim()).toBe("60");
+    expect(pg("SELECT character_maximum_length FROM information_schema.columns WHERE table_name='tf_ui_typ' AND column_name='emp_no';").trim()).toBe("20"); // 지정하지 않은 컬럼은 원본 정의
+  } finally { try { pg(`DROP TABLE IF EXISTS tf_ui_typ; DROP TABLE IF EXISTS tableflow_load_receipts;`); } catch {} }
+});
+
+test("real browser: 중간에 멈춘 대용량 이관을 작업 이력에서 재개 — 완료된 분량은 건너뛰고 이어서 완료", async ({ page }) => {
+  test.setTimeout(120_000);
+  oracle(`BEGIN EXECUTE IMMEDIATE 'DROP TABLE TF_UI_RES'; EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+CREATE TABLE TF_UI_RES (ID NUMBER(10) PRIMARY KEY, NAME VARCHAR2(40));
+INSERT INTO TF_UI_RES SELECT LEVEL, 'n'||LEVEL FROM DUAL CONNECT BY LEVEL <= 12500;
+UPDATE TF_UI_RES SET NAME='${"x".repeat(30)}' WHERE ID=7000;
+COMMIT;`);
+  pg(`DROP TABLE IF EXISTS tf_ui_res; ${receipts}
+CREATE TABLE tf_ui_res (id integer PRIMARY KEY, name varchar(20));`);
+  try {
+    // 화면의 분석은 길이 초과(30자)를 미리 오류로 막으므로, 중간에 실패하는 상황은 API로 직접 이관을 시작해 만든다.
+    const conn = (db: string, port: number, dbms: string) => ({ dbms, host: "localhost", port, database: db, username: "tableflow", password: "TableFlowTest2026", tls: false });
+    const requestId = "99999999-8888-7777-6666-555555555555";
+    const body = { source: conn("FREEPDB1", 11521, "oracle"), sourceSchema: "TABLEFLOW", sourceTable: "TF_UI_RES", target: conn("tableflow", 15432, "postgresql"),
+      targetSchema: "public", targetTable: "tf_ui_res", limit: 12500, requestId, confirmed: true, chunkSize: 5000, mappings: [{ source: "ID", target: "id" }, { source: "NAME", target: "name" }] };
+    const started = await page.request.post("http://localhost:18080/api/v1/connections/migrate/jobs", { data: body });
+    expect(started.ok()).toBe(true);
+    await expect.poll(async () => (await (await page.request.get(`http://localhost:18080/api/v1/connections/migrate/jobs/${requestId}`)).json()).state, { timeout: 60_000 }).toBe("failed");
+    expect(pg("SELECT count(*) FROM tf_ui_res;").trim()).toBe("5000"); // 첫 분할만 저장됨
+    // 작업 이력에 중단된 작업이 나타나고 재개할 수 있다(비밀번호가 저장되지 않은 연결이라 입력이 필요).
+    await page.goto("/"); await page.reload();
+    await page.getByRole("navigation", { name: "메뉴" }).getByRole("button", { name: "작업 이력", exact: true }).click();
+    const jobs = page.getByRole("region", { name: "이관 작업" });
+    await expect(jobs.getByRole("row", { name: /TF_UI_RES.*tf_ui_res.*중단·실패/ }).first()).toBeVisible();
+    // 원인(원본의 긴 값)을 고친 뒤 재개한다.
+    oracle(`UPDATE TF_UI_RES SET NAME='ok' WHERE ID=7000;\nCOMMIT;`);
+    await jobs.getByRole("button", { name: "재개", exact: true }).first().click();
+    await jobs.getByLabel("원본 DB 비밀번호").fill("TableFlowTest2026");
+    await jobs.getByLabel("대상 DB 비밀번호").fill("TableFlowTest2026");
+    await jobs.getByRole("button", { name: "재개 시작" }).click();
+    await expect.poll(async () => (await (await page.request.get(`http://localhost:18080/api/v1/connections/migrate/jobs/${requestId}`)).json()).state, { timeout: 60_000 }).toBe("succeeded");
+    await jobs.getByRole("button", { name: "새로고침" }).count(); // 목록은 진행 중이면 자동 갱신된다
+    await expect(jobs.getByRole("row", { name: /TF_UI_RES.*12,500 \/ 12,500행.*3 \/ 3회/ }).first()).toBeVisible({ timeout: 15_000 });
+    expect(pg("SELECT count(*)||'|'||count(DISTINCT id)||'|'||max(length(name)) FROM tf_ui_res;").trim()).toBe("12500|12500|6"); // 중복 없이 전체(가장 긴 이름 n12500)
+    const status = await (await page.request.get(`http://localhost:18080/api/v1/connections/migrate/jobs/${requestId}`)).json();
+    expect(status.state).toBe("succeeded"); expect(status.replayedChunks).toBe(1); // 첫 분할은 영수증으로 건너뜀
+    const saved = await (await page.request.get("http://localhost:18080/api/v1/connections/migrate/jobs")).text();
+    expect(saved).not.toContain("TableFlowTest2026"); // 목록·정의에 비밀번호가 없다
+  } finally {
+    try { oracle(`DROP TABLE TF_UI_RES;`); } catch {}
+    try { pg(`DROP TABLE IF EXISTS tf_ui_res;`); } catch {}
+  }
+});

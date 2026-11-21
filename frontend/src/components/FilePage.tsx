@@ -60,6 +60,7 @@ export default function FilePage({ server, saved, reloadSaved, onHistoryChanged 
   const [ldPlan, setLdPlan] = useState<LoadPlan | null>(null);
   const [ldConfirmed, setLdConfirmed] = useState(false);
   const [ldRequestId, setLdRequestId] = useState("");
+  const [ldPk, setLdPk] = useState<string[]>([]);
   const [ldResult, setLdResult] = useState<{ insertedRows: number; requestId: string; replayed: boolean } | null>(null);
   const [suggestions, setSuggestions] = useState<MappingSuggestion[] | null>(null);
 
@@ -156,7 +157,8 @@ export default function FilePage({ server, saved, reloadSaved, onHistoryChanged 
   const canExport = !!table && !busy && validated && !hasErrors && (!isOcr || reviewed);
   const loadTarget = ldMode === "new" ? ldName.trim() : ldPick?.table ?? "";
   const loadSchema = ldMode === "new" ? ldSchema : ldPick?.schema ?? ldSchema;
-  const loadBody = () => ({ connection: ldV!.connection, table, schema: loadSchema, tableName: loadTarget, createTable: ldMode === "new" });
+  const pkValid = ldPk.filter(n => table?.columns.some(c => c.included && c.target_name === n));
+  const loadBody = () => ({ connection: ldV!.connection, table, schema: loadSchema, tableName: loadTarget, createTable: ldMode === "new", primaryKey: ldMode === "new" ? pkValid : undefined });
   const ldColumns: DbColumn[] = useMemo(() => ldPick?.columns ?? [], [ldPick]);
 
   return <div className="grid">
@@ -255,6 +257,9 @@ export default function FilePage({ server, saved, reloadSaved, onHistoryChanged 
           <div className="ol"><input type="radio" name="ld-mode" id="ld-old" checked={ldMode === "existing"} onChange={() => { setLdMode("existing"); resetLoad(); }} /><label htmlFor="ld-old">기존 테이블에 적재</label><Help text="이미 있는 테이블에 행을 추가합니다. 컬럼 구조가 맞아야 합니다." /></div>
           <span className="mut">{ldMode === "existing" ? "위에서 대상 테이블을 선택하세요" : "기존 테이블에 적재하려면 선택하세요"}</span>
         </div>
+        {ldMode === "new" && table && <div className="grid"><div className="sp-h">기본 키(PK)<Help text="행을 구분하는 고유 번호가 될 컬럼을 고릅니다(여러 개 가능). 선택한 컬럼에는 빈 값과 중복 값이 없어야 하며, 선택하지 않으면 기본 키 없이 생성됩니다." /></div>
+          <div className="row" role="group" aria-label="기본 키 컬럼">{table.columns.filter(c => c.included).map(c => <span className="check" key={c.id}><input type="checkbox" id={`ld-pk-${c.id}`} checked={ldPk.includes(c.target_name)} disabled={!!busy}
+            onChange={e => { setLdPk(cur => e.target.checked ? [...cur, c.target_name] : cur.filter(n => n !== c.target_name)); resetLoad(); }} /><label htmlFor={`ld-pk-${c.id}`}>{c.target_name}</label></span>)}</div></div>}
         {ldMode === "existing" && table && ldColumns.length > 0 && <div className="grid">
           <div><button className="btn" disabled={!!busy} onClick={() => { setSuggestions(suggestMapping(table, ldColumns)); }}>DB 컬럼 기준 자동 매핑 추천</button></div>
           {suggestions && <><div className="table-scroll mapping-table"><table><thead><tr><th>원본 컬럼</th><th>추천 DB 컬럼</th><th>근거</th><th>비고</th></tr></thead><tbody>{suggestions.map(item => <tr key={item.columnId}><td>{item.source}</td><td>{item.target ?? "미확정"}</td><td>{{ exact: "이름 일치", alias: "사용자·업무 용어 매핑", similar: "유사한 이름", none: "—" }[item.reason]}</td><td>{item.note || "—"}</td></tr>)}</tbody></table></div>

@@ -11,7 +11,8 @@ import { Help, Pager } from "./ui";
 
 type Level = "ok" | "info" | "warn" | "error";
 type ColumnPlan = { source: string; target: string; sourceType: string; targetType: string; conversion: string; level: Level; detail: string };
-type Analysis = { sourceRows: number; maxRows: number; columns: ColumnPlan[]; notes: string[]; warnings: string[]; createsTable: boolean; ddl: string[] };
+type FkPlan = { name: string; columns: string[]; parentTable: string; parentInTarget: boolean; copied: boolean; message: string };
+type Analysis = { sourceRows: number; maxRows: number; columns: ColumnPlan[]; notes: string[]; warnings: string[]; createsTable: boolean; ddl: string[]; foreignKeys: FkPlan[] };
 type Plan = { sourceDbms: string; targetDbms: string; source: string; target: string; sourceRows: number; rows: number; columns: ColumnPlan[]; notes: string[];
   createsTable: boolean; ddl: string[]; warnings: string[]; bulk: boolean; chunks: number; chunkSize: number };
 type JobStatus = { id: string; state: "queued" | "running" | "succeeded" | "failed" | "cancelled"; totalRows: number; doneRows: number; totalChunks: number; doneChunks: number;
@@ -52,6 +53,7 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
   const [preserveKeys, setPreserveKeys] = useState(false);
   const [chunkText, setChunkText] = useState(""); const [mapping, setMapping] = useState<Record<string, string>>({});
   const [ov, setOv] = useState<Record<string, Override>>({});
+  const [copyIdx, setCopyIdx] = useState(false); const [copyDef, setCopyDef] = useState(false); const [copyFk, setCopyFk] = useState(false);
   const [analysis, setAnalysis] = useState<Analysis | null>(null); const [analysisError, setAnalysisError] = useState("");
   const [preview, setPreview] = useState<Table | null>(null); const [previewError, setPreviewError] = useState("");
   const [pPage, setPPage] = useState(0); const [pSize, setPSize] = useState(10);
@@ -81,7 +83,8 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
   const working = busy || jobActive;
 
   const body = () => ({ source: srcV!.connection, sourceSchema: src!.schema, sourceTable: src!.table, target: dstV!.connection, targetSchema: mode === "new" ? dstSchema : dst!.schema,
-    targetTable, mappings, limit: Math.max(1, total), createTable: mode === "new", preserveKeys, chunkSize: bulk && chunkValid ? chunk : undefined });
+    targetTable, mappings, limit: Math.max(1, total), createTable: mode === "new", preserveKeys,
+    copyIndexes: mode === "new" && copyIdx, copyDefaults: mode === "new" && copyDef, copyForeignKeys: mode === "new" && copyFk, chunkSize: bulk && chunkValid ? chunk : undefined });
   function resetRun() { setPlan(null); setConfirmed(false); setRequestId(""); setDone(null); setJob(null); setError(""); setNotice(""); }
   async function run(action: () => Promise<void>) {
     setBusy(true); setError(""); setNotice("");
@@ -121,7 +124,7 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
     }, 350);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dstOk, mappings, preserveKeys, mode, targetTable]);
+  }, [dstOk, mappings, preserveKeys, mode, targetTable, copyIdx, copyDef, copyFk]);
   useEffect(() => { // 원본 데이터 미리보기(샘플 200행)
     if (!srcOk || !src || !srcV) return;
     const columns = src.columns.filter(c => !UNSUPPORTED.has(c.jdbcType ?? 12)).map(c => c.name);
@@ -201,6 +204,11 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
           <span className="mut">{mode === "existing" ? "위에서 대상 테이블을 선택하세요" : "기존 테이블에 적재하려면 선택하세요"}</span>
           <div className="ol span"><input type="checkbox" id="keep-keys" checked={preserveKeys} disabled={working} onChange={e => { setPreserveKeys(e.target.checked); setDstOk(false); }} /><label htmlFor="keep-keys">원본 기본 키(PK) 유지</label><Help text="기본 키는 행을 구분하는 고유 번호입니다. 선택하면 자동 증가 대상 컬럼에도 원본 값을 그대로 넣고, 적재 후 시퀀스를 최댓값 다음으로 맞춥니다." /></div>
         </div>
+        {mode === "new" && <div className="split"><div className="sp-h">함께 복제할 항목<Help text="신규 테이블을 만들 때 원본의 구조를 함께 가져옵니다. 기본값은 숫자·문자·불리언·현재 시각만 옮기고, 시퀀스·함수는 복제하지 않습니다. FK는 부모 테이블이 대상에 이미 있어야 만들 수 있습니다." /></div>
+          <div className="row">
+            <span className="check"><input id="copy-idx" type="checkbox" checked={copyIdx} disabled={working} onChange={e => { setCopyIdx(e.target.checked); setDstOk(false); }} /><label htmlFor="copy-idx">인덱스 복제</label></span>
+            <span className="check"><input id="copy-def" type="checkbox" checked={copyDef} disabled={working} onChange={e => { setCopyDef(e.target.checked); setDstOk(false); }} /><label htmlFor="copy-def">기본값 복제</label></span>
+            <span className="check"><input id="copy-fk" type="checkbox" checked={copyFk} disabled={working} onChange={e => { setCopyFk(e.target.checked); setDstOk(false); }} /><label htmlFor="copy-fk">외래 키(FK) 복제</label></span></div></div>}
         <div className="split">
           <div className="sp-h">분할 이관<Help text="대용량 데이터를 나누어 이관하는 설정입니다. 분할 단위마다 따로 저장되므로 중단되어도 이어서 진행할 수 있습니다. 기본값은 설정 메뉴의 분할 이관 단위입니다." /></div>
           <div className="row end"><label className="f" style={{ width: 200 }}>분할 단위(행)<input aria-label="분할 단위(행)" inputMode="numeric" value={chunkText} disabled={working} onChange={e => { setChunkText(e.target.value); setDstOk(false); }} /></label>
@@ -231,6 +239,8 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
 
       <h2 style={{ marginTop: 26 }}>데이터 검증<Help text="형식 오류, 길이 초과, 호환되지 않는 타입을 찾아냅니다. 오류가 남아 있으면 이관을 시작할 수 없습니다." /><span className="hs">이관 전에 컬럼 호환성과 샘플 데이터를 확인합니다</span></h2>
       <div className="stats"><div className="stat"><b>{fmt(total)}</b><span>이관할 행 수</span></div><div className="stat"><b style={{ color: errors ? "var(--bad)" : undefined }}>{errors}</b><span>오류</span></div><div className="stat"><b style={{ color: warns ? "var(--warn)" : undefined }}>{warns}</b><span>경고</span></div><div className="stat"><b>{analysis ? analysis.columns.filter(c => c.level === "ok" || c.level === "info").length : 0}</b><span>정상 컬럼</span></div></div>
+      {analysis && analysis.foreignKeys.length > 0 && <div className="alert" role="status" aria-label="이관 순서 안내" style={{ marginTop: 12 }}><strong>외래 키(FK) · 이관 순서</strong>
+        <ul>{analysis.foreignKeys.map(f => <li key={f.name}><span className={`pill ${f.copied ? "ok" : f.parentInTarget ? "" : "warn"}`}>{f.copied ? "FK 생성" : f.parentInTarget ? "부모 있음" : "부모 먼저 이관"}</span> {f.columns.join(", ")} → <b>{f.parentTable}</b> · {f.message}</li>)}</ul></div>}
       {analysis && (analysis.warnings.length > 0 || analysis.notes.length > 0 || analysis.createsTable) && <div className="grid" style={{ marginTop: 12 }}>
         {analysis.warnings.length > 0 && <div className="alert warning" role="status"><strong>확인 필요</strong><ul>{analysis.warnings.map(w => <li key={w}>{w}</li>)}</ul></div>}
         {analysis.notes.length > 0 && <div className="alert" role="status"><ul>{analysis.notes.map(n => <li key={n}>{n}</li>)}</ul></div>}

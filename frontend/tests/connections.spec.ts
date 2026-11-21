@@ -77,6 +77,7 @@ test("target load UI contract: new-table plan, consent, retry with the same requ
   await fillConnection(load, "대상");
   await load.getByLabel("대상 스키마", { exact: true }).selectOption("public");
   await load.getByLabel("신규 테이블 이름").fill("TB_NEW");
+  await load.getByRole("group", { name: "기본 키 컬럼" }).getByLabel("EMP_NO", { exact: true }).check(); // 신규 테이블의 기본 키 지정
   await load.getByRole("button", { name: "대상·스키마 점검" }).click();
   await expect(load.getByText(/적재하면 아래 테이블이 새로 생성됩니다/)).toBeVisible();
   await expect(load.getByText(/기본 키 없이 생성됩니다/)).toBeVisible();
@@ -89,7 +90,7 @@ test("target load UI contract: new-table plan, consent, retry with the same requ
   await expect(page.getByText(/적재 완료: 3행/).first()).toBeVisible();
   expect(attempts).toHaveLength(2);
   expect(attempts[0].requestId).toMatch(/^[a-f0-9-]{36}$/); expect(attempts[1].requestId).toBe(attempts[0].requestId);
-  expect(attempts[0].createTable).toBe(true); expect(attempts[0].tableName).toBe("TB_NEW");
+  expect(attempts[0].createTable).toBe(true); expect(attempts[0].tableName).toBe("TB_NEW"); expect(attempts[0].primaryKey).toEqual(["EMP_NO"]);
 });
 
 test("source DB extraction UI contract: column pick → workbench → CSV (mock DB read, real validate/export)", async ({ page }) => {
@@ -141,13 +142,13 @@ test("target DB column mapping suggestion: alias match, explicit apply, nothing 
 });
 
 test("DB 이관 UI contract: mapping status, split settings and gating (mock DB)", async ({ page }) => {
-  await mockDb(page, { tables: ["EMP"], columns: [col("EMP_NO", 1), col("EMP_NM", 2, { size: 50 }), col("SALARY", 3, { type: "numeric", jdbcType: 3, size: 12, scale: 2 })] });
+  await mockDb(page, { tables: ["EMP"], columns: [col("EMP_NO", 1), col("EMP_NM", 2, { size: 50, foreignKey: true }), col("SALARY", 3, { type: "numeric", jdbcType: 3, size: 12, scale: 2 })] });
   await page.route("**/connections/count", r => r.fulfill({ json: { rows: 12500 } }));
   await page.route("**/connections/read", r => r.fulfill({ json: { schema_version: "1.0", table_id: "t", name: "EMP", source: { filename: "public.EMP", type: "database", extraction_method: "jdbc" },
     columns: [{ id: "c1", name: "EMP_NO", target_name: "EMP_NO", data_type: "string", nullable: true, included: true, max_length: null, precision: null, scale: null }],
     rows: Array.from({ length: 25 }, (_, i) => ({ id: `r${i}`, cells: { c1: { raw: String(i + 1), value: String(i + 1), confidence: null, edited: false } } })) } }));
   let analysisBody: any = null; let level = "error";
-  await page.route("**/connections/migrate/analyze", r => { analysisBody = r.request().postDataJSON(); return r.fulfill({ json: { sourceRows: 12500, maxRows: 1000000, notes: [], warnings: [], createsTable: false, ddl: [],
+  await page.route("**/connections/migrate/analyze", r => { analysisBody = r.request().postDataJSON(); return r.fulfill({ json: { sourceRows: 12500, maxRows: 1000000, notes: [], warnings: [], createsTable: false, ddl: [], foreignKeys: [{ name: "FK_EMP_DEPT", columns: ["EMP_NM"], parentTable: "DEPT", parentInTarget: false, copied: false, message: "부모 테이블 DEPT이(가) 대상에 없습니다. 먼저 DEPT을(를) 이관한 뒤 이 테이블을 이관하세요." }],
     columns: [{ source: "EMP_NO", target: "EMP_NO", sourceType: "varchar", targetType: "varchar", conversion: "", level: "ok", detail: "" },
               { source: "EMP_NM", target: "EMP_NM", sourceType: "varchar", targetType: "varchar", conversion: "", level, detail: level === "error" ? "원본 값 중 최대 30자로, 대상 한도(20자)를 넘는 값이 1건 있습니다." : "" },
               { source: "SALARY", target: "SALARY", sourceType: "numeric", targetType: "numeric", conversion: "", level: "warn", detail: "소수점 이하 값은 반올림될 수 있습니다." }] } }); });
@@ -163,6 +164,7 @@ test("DB 이관 UI contract: mapping status, split settings and gating (mock DB)
   await fillConnection(dst, "대상");
   await dst.getByLabel("대상 스키마", { exact: true }).selectOption("public");
   await dst.getByLabel("신규 테이블 이름").fill("EMP2");
+  for (const label of ["인덱스 복제", "기본값 복제", "외래 키(FK) 복제"]) await dst.getByRole("checkbox", { name: label }).check();
   // 분할 단위: 직접 입력하거나 빠른 선택, 범위를 벗어나면 막는다.
   await expect(dst.getByRole("status").filter({ hasText: "총 12,500행 ÷ 5,000행 = 3회 분할" })).toBeVisible();
   await dst.getByRole("button", { name: "2,500" }).click();
@@ -175,6 +177,20 @@ test("DB 이관 UI contract: mapping status, split settings and gating (mock DB)
   // 검토: 컬럼별 상태. 오류가 있으면 이관 시작을 누를 수 없다.
   const review = page.getByRole("region", { name: "검토" });
   await expect(review.getByText("대상 한도(20자)를 넘는 값이 1건")).toBeVisible();
+  expect(analysisBody.copyIndexes).toBe(true); expect(analysisBody.copyDefaults).toBe(true); expect(analysisBody.copyForeignKeys).toBe(true);
+  // PK / FK 표시와 부모 테이블 이관 순서 안내
+  await expect(review.locator("tr", { hasText: "EMP_NO" }).first().getByText("PK", { exact: true })).toBeVisible();
+  await expect(review.locator("tr", { hasText: "EMP_NM" }).first().getByText("FK", { exact: true })).toBeVisible();
+  await expect(review.getByRole("status", { name: "이관 순서 안내" })).toContainText("부모 먼저 이관");
+  await expect(review.getByRole("status", { name: "이관 순서 안내" })).toContainText("DEPT");
+  // 신규 테이블의 대상 타입·길이를 직접 지정하면 요청에 담긴다(지정하지 않은 컬럼은 원본 정의를 따른다).
+  await review.getByLabel("EMP_NM 길이 또는 정밀도", { exact: true }).fill("80");
+  await review.getByLabel("SALARY 대상 타입", { exact: true }).selectOption("string");
+  await expect.poll(() => analysisBody.mappings.find((m: any) => m.source === "EMP_NM")?.size).toBe(80);
+  await expect.poll(() => analysisBody.mappings.find((m: any) => m.source === "SALARY")?.type).toBe("string");
+  expect(analysisBody.mappings.find((m: any) => m.source === "EMP_NO")).not.toHaveProperty("type");
+  await review.getByLabel("SALARY 대상 타입", { exact: true }).selectOption("decimal"); // 원래 타입으로 되돌리면 지정이 사라진다
+  await expect.poll(() => analysisBody.mappings.find((m: any) => m.source === "SALARY")?.type).toBeUndefined();
   expect(analysisBody.chunkSize).toBe(2500); expect(analysisBody.createTable).toBe(true); expect(analysisBody.targetTable).toBe("EMP2");
   await expect(review.getByText("매핑 3건 · 경고 1건 · 오류 1건 — 오류를 해결해야 이관할 수 있습니다")).toBeVisible();
   await expect(page.getByRole("button", { name: "이관 시작" })).toBeDisabled();
@@ -192,4 +208,31 @@ test("DB 이관 UI contract: mapping status, split settings and gating (mock DB)
   await expect(page.getByRole("button", { name: "이관 시작" })).toBeDisabled(); // 동의 전
   await page.getByRole("checkbox", { name: /실제 DB INSERT에 동의/ }).check();
   await expect(page.getByRole("button", { name: "이관 시작" })).toBeEnabled();
+});
+
+test("작업 이력: 중단된 이관 목록(서버 재시작 포함)과 재개 — 저장된 비밀번호가 없는 쪽만 비밀번호를 받는다 (mock)", async ({ page }) => {
+  await mockDb(page);
+  let resumeBody: any = null; let resumeId = "";
+  const job = (state: string, over: Record<string, unknown> = {}) => ({ id: "11111111-2222-3333-4444-555555555555", state, totalRows: 12500, doneRows: 5000, totalChunks: 3, doneChunks: 1, replayedChunks: 0,
+    errorCode: "SERVER_RESTARTED", message: "서버가 다시 시작되어 이관이 중단되었습니다. 재개하면 완료된 분량은 건너뛰고 이어서 진행합니다.", startedAt: "2026-11-21T00:00:00Z", finishedAt: null, ...over });
+  let state = "failed";
+  await page.route("**/connections/history**", r => r.fulfill({ json: { enabled: true, items: [] } }));
+  await page.route(/\/connections\/migrate\/jobs$/, r => r.fulfill({ json: { enabled: true, items: [{ status: job(state), source: "Oracle · HR.EMP", target: "PostgreSQL · public.emp", resumable: state === "failed", sourceNeedsPassword: true, targetNeedsPassword: false }] } }));
+  await page.route("**/connections/migrate/jobs/*/resume", r => { resumeBody = r.request().postDataJSON(); resumeId = r.request().url().split("/").slice(-2)[0]; state = "running"; return r.fulfill({ json: job("running") }); });
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "메뉴" }).getByRole("button", { name: "작업 이력", exact: true }).click();
+  const jobs = page.getByRole("region", { name: "이관 작업" });
+  await expect(jobs.getByText("Oracle · HR.EMP → PostgreSQL · public.emp")).toBeVisible();
+  await expect(jobs.getByText("서버가 다시 시작되어 이관이 중단되었습니다")).toBeVisible();
+  await expect(jobs.getByText("5,000 / 12,500행 · 1 / 3회")).toBeVisible();
+  await jobs.getByRole("button", { name: "재개", exact: true }).click();
+  await expect(jobs.getByLabel("대상 DB 비밀번호")).toHaveCount(0); // 대상은 저장된 비밀번호를 쓴다
+  const start = jobs.getByRole("button", { name: "재개 시작" });
+  await expect(start).toBeDisabled();
+  await jobs.getByLabel("원본 DB 비밀번호").fill("typed-source-pw");
+  await start.click();
+  await expect(page.getByText("이관을 재개했습니다")).toBeVisible();
+  expect(resumeId).toBe("11111111-2222-3333-4444-555555555555");
+  expect(resumeBody.sourcePassword).toBe("typed-source-pw"); expect(resumeBody.targetPassword).toBeUndefined();
+  expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toContain("typed-source-pw");
 });
