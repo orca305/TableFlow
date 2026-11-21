@@ -92,6 +92,13 @@ public class ConnectionController {
     @PostMapping("/migrate/check") public dev.tableflow.load.MigrationService.Plan migrateCheck(@Valid @RequestBody MigrateRequest r){
         return migration.check(r.source(),r.sourceSchema(),r.sourceTable(),r.target(),r.targetSchema(),r.targetTable(),r.mappings(),r.limit(),r.createTable(),r.preserveKeys(),r.chunkSize()==null?migration.defaultChunkSize():r.chunkSize(),r.extras());
     }
+    public record OrderRequest(@NotNull @Valid Credentials connection, @NotBlank @Size(max=128) String schema, @NotEmpty @Size(max=200) java.util.List<@NotBlank @Size(max=128) String> tables) {
+        @Override public String toString(){return "OrderRequest[redacted]";}
+    }
+    /** 선택한 테이블의 이관 순서(외래 키 기준, 부모 먼저). 읽기 전용. */
+    @PostMapping("/order") public dev.tableflow.load.MigrationService.OrderPlan order(@Valid @RequestBody OrderRequest r){
+        return migration.order(r.connection(),r.schema(),r.tables());
+    }
     /** 컬럼 매핑 분석: 값은 검증하지 않고 컬럼별 호환성(ok/info/warn/error)과 변환·경고만 돌려준다. 아무것도 쓰지 않는다. */
     @PostMapping("/migrate/analyze") public dev.tableflow.load.MigrationService.Analysis migrateAnalyze(@Valid @RequestBody MigrateRequest r){
         return migration.analyze(r.source(),r.sourceSchema(),r.sourceTable(),r.target(),r.targetSchema(),r.targetTable(),r.mappings(),r.createTable(),r.preserveKeys(),r.extras());

@@ -132,6 +132,42 @@ public class MigrationService {
         });
     }
 
+    // ---------------------------------------------------------------- 이관 순서(FK 기준)
+    /** level 0 = 부모가 없어 먼저 이관할 테이블. parents = 선택한 테이블 중 이 테이블이 참조하는 부모, externalParents = 선택하지 않은 부모. */
+    public record OrderItem(String table, int level, List<String> parents, List<String> externalParents) {}
+    /** cycles: 서로 참조해 순서를 정할 수 없는 테이블(FK를 나중에 추가하거나 한 번에 이관해야 한다). */
+    public record OrderPlan(List<OrderItem> order, List<String> cycles) {}
+    /** 선택한 테이블들의 외래 키를 읽어 부모가 먼저 오도록 이관 순서를 계산한다(읽기 전용). */
+    public OrderPlan order(Credentials source, String schema, List<String> tables) {
+        Map<String, Set<String>> parents = new LinkedHashMap<>(); Map<String, Set<String>> external = new HashMap<>();
+        Map<String, String> byLower = new HashMap<>(); for (String t : tables) byLower.put(t.toLowerCase(Locale.ROOT), t);
+        for (String t : tables) {
+            Set<String> in = new TreeSet<>(), out = new TreeSet<>();
+            for (var fk : explorer.extras(source, schema, t).foreignKeys()) {
+                String hit = byLower.get(fk.parentTable().toLowerCase(Locale.ROOT));
+                if (hit != null) { if (!hit.equals(t)) in.add(hit); } else out.add(fk.parentTable()); // 자기 참조는 순서에 영향이 없다
+            }
+            parents.put(t, in); external.put(t, out);
+        }
+        return computeOrder(parents, external);
+    }
+    /** 위상 정렬(단계별). 순환에 걸린 테이블은 cycles로 돌려준다. */
+    static OrderPlan computeOrder(Map<String, Set<String>> parents, Map<String, Set<String>> external) {
+        Map<String, Integer> level = new HashMap<>(); Set<String> remaining = new LinkedHashSet<>(parents.keySet()); int current = 0;
+        while (!remaining.isEmpty()) {
+            List<String> ready = new ArrayList<>();
+            for (String t : remaining) if (parents.get(t).stream().allMatch(level::containsKey)) ready.add(t);
+            if (ready.isEmpty()) break; // 남은 것은 모두 순환
+            for (String t : ready) { level.put(t, current); remaining.remove(t); }
+            current++;
+        }
+        List<OrderItem> order = new ArrayList<>();
+        for (String t : parents.keySet()) if (level.containsKey(t))
+            order.add(new OrderItem(t, level.get(t), new ArrayList<>(parents.get(t)), new ArrayList<>(external.getOrDefault(t, Set.of()))));
+        order.sort(Comparator.comparingInt(OrderItem::level).thenComparing(OrderItem::table));
+        return new OrderPlan(order, new ArrayList<>(remaining));
+    }
+
     // ---------------------------------------------------------------- 매핑 분석(값 검증 없이 컬럼 호환성만)
     /** 신규 테이블 생성 시 원본에서 함께 복제할 항목. */
     public record Extras(boolean indexes, boolean defaults, boolean foreignKeys) { public static final Extras NONE = new Extras(false, false, false); }
