@@ -39,6 +39,27 @@ class FileLoadCreateIntegrationTests {
         return new Table("1.0",UUID.randomUUID().toString(),"employees",new Source("employees.csv","csv","file"),cols,rows);
     }
 
+    @ParameterizedTest(name="pk {0}")
+    @EnumSource(Dbms.class)
+    void createsTableWithChosenPrimaryKeyAndRejectsDuplicates(Dbms db)throws Exception {
+        var enabled=Arrays.asList(System.getenv().getOrDefault("TABLEFLOW_TEST_JDBC_DBMS","postgresql,mysql,mariadb").split(","));
+        Assumptions.assumeTrue(enabled.contains(db.name()));
+        var c=credentials(db); String sc=schema(db), name="TF_FILE_PK";
+        try(var conn=DriverManager.getConnection(explorer.url(c),explorer.properties(c))) {
+            dropQuiet(conn,q(db,name)); dropQuiet(conn,q(db,"tableflow_load_receipts"));
+            var plan=migration.planCreate(c,sample(),sc,name,List.of("EMP_NO"));
+            assertTrue(plan.ddl().get(0).contains("PRIMARY KEY"),plan.ddl().get(0));
+            assertTrue(plan.warnings().stream().noneMatch(w->w.contains("기본 키 없이")),plan.warnings().toString());
+            assertThrows(IllegalArgumentException.class,()->migration.planCreate(c,sample(),sc,name,List.of("NOPE")));
+            var dup=sample(); dup.rows().get(1).cells().put("c1",new Cell("001","001",null,false)); // EMP_NO 중복
+            var e=assertThrows(IllegalArgumentException.class,()->migration.planCreate(c,dup,sc,name,List.of("EMP_NO")));
+            assertTrue(e.getMessage().contains("중복 값 1건"),e.getMessage());
+            migration.ensureTable(c,sample(),sc,name,List.of("EMP_NO"));
+            assertTrue(explorer.columns(c,sc,name).items().stream().anyMatch(col->col.name().equalsIgnoreCase("EMP_NO")&&col.primaryKey()));
+            dropQuiet(conn,q(db,name)); dropQuiet(conn,q(db,"tableflow_load_receipts"));
+        }
+    }
+
     @ParameterizedTest(name="{0}")
     @EnumSource(Dbms.class)
     void createsTableThenLoadsAndRetriesIdempotently(Dbms db)throws Exception {

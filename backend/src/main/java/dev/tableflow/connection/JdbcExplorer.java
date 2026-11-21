@@ -113,6 +113,55 @@ public class JdbcExplorer {
             return new Items<>(items, false);
         });
     }
+    public record IndexInfo(String name, boolean unique, List<String> columns) {}
+    public record ForeignKeyInfo(String name, List<String> columns, String parentSchema, String parentTable, List<String> parentColumns) {}
+    /** 테이블의 보조 인덱스(기본 키 인덱스 제외), 외래 키, 컬럼 기본값(원문). 대상 테이블 생성 시 복제하는 데 쓴다. */
+    public record TableExtras(List<IndexInfo> indexes, List<ForeignKeyInfo> foreignKeys, Map<String, String> defaults) {}
+    public TableExtras extras(Credentials credentials, String schema, String table) {
+        requireName(schema); requireName(table);
+        return connected(credentials, connection -> {
+            var meta = connection.getMetaData(); boolean catalogBased = catalogBased(credentials.dbms());
+            String catalog = catalogBased ? schema : null, namespace = catalogBased ? null : schema;
+            Set<String> pk = new HashSet<>();
+            try (var rows = meta.getPrimaryKeys(catalog, namespace, table)) { while (rows.next()) pk.add(rows.getString("COLUMN_NAME")); }
+            // 인덱스: 이름별로 모으고 ORDINAL_POSITION 순으로 정렬
+            Map<String, TreeMap<Integer, String>> cols = new LinkedHashMap<>(); Map<String, Boolean> unique = new HashMap<>();
+            try (var rows = meta.getIndexInfo(catalog, namespace, table, false, true)) {
+                while (rows != null && rows.next()) {
+                    String name = rows.getString("INDEX_NAME"), column = rows.getString("COLUMN_NAME");
+                    if (name == null || column == null || rows.getShort("TYPE") == DatabaseMetaData.tableIndexStatistic) continue;
+                    cols.computeIfAbsent(name, k -> new TreeMap<>()).put(rows.getInt("ORDINAL_POSITION"), column);
+                    unique.put(name, !rows.getBoolean("NON_UNIQUE"));
+                }
+            } catch (SQLException ignored) { /* 인덱스 정보를 못 읽으면 복제만 건너뛴다 */ }
+            List<IndexInfo> indexes = new ArrayList<>();
+            for (var e : cols.entrySet()) {
+                List<String> list = new ArrayList<>(e.getValue().values());
+                if (unique.get(e.getKey()) && new HashSet<>(list).equals(pk)) continue; // 기본 키가 만든 인덱스
+                indexes.add(new IndexInfo(e.getKey(), unique.get(e.getKey()), list));
+            }
+            // 외래 키: FK 이름별로 KEY_SEQ 순서의 컬럼 쌍
+            Map<String, TreeMap<Integer, String[]>> fks = new LinkedHashMap<>(); Map<String, String[]> parents = new HashMap<>();
+            try (var rows = meta.getImportedKeys(catalog, namespace, table)) {
+                while (rows != null && rows.next()) {
+                    String name = Optional.ofNullable(rows.getString("FK_NAME")).orElse("fk_" + rows.getString("PKTABLE_NAME"));
+                    fks.computeIfAbsent(name, k -> new TreeMap<>()).put(rows.getInt("KEY_SEQ"), new String[]{rows.getString("FKCOLUMN_NAME"), rows.getString("PKCOLUMN_NAME")});
+                    parents.put(name, new String[]{catalogBased ? rows.getString("PKTABLE_CAT") : rows.getString("PKTABLE_SCHEM"), rows.getString("PKTABLE_NAME")});
+                }
+            } catch (SQLException ignored) { /* 외래 키를 못 읽으면 복제만 건너뛴다 */ }
+            List<ForeignKeyInfo> foreign = new ArrayList<>();
+            for (var e : fks.entrySet()) {
+                var pair = e.getValue().values();
+                foreign.add(new ForeignKeyInfo(e.getKey(), pair.stream().map(p -> p[0]).toList(), parents.get(e.getKey())[0], parents.get(e.getKey())[1], pair.stream().map(p -> p[1]).toList()));
+            }
+            // 기본값(원문). Oracle은 COLUMN_DEF가 LONG이라 컬럼 번호 순서대로 읽어야 한다.
+            Map<String, String> defaults = new LinkedHashMap<>();
+            try (var rows = meta.getColumns(catalog, namespace == null ? null : literalPattern(meta, namespace), literalPattern(meta, table), "%")) {
+                while (rows.next()) { String name = rows.getString(4); String def = rows.getString(13); if (def != null && !def.isBlank()) defaults.put(name, def.strip()); }
+            }
+            return new TableExtras(indexes, foreign, defaults);
+        });
+    }
     private boolean catalogBased(Dbms dbms) { return dbms == Dbms.mysql || dbms == Dbms.mariadb; }
     private void requireName(String name) {
         if (name == null || name.isBlank() || name.length() > 128 || name.chars().anyMatch(c -> c < 32))

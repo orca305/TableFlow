@@ -64,11 +64,11 @@ public class MigrationService {
 
     private enum Kind { NONE, DATETIME_TO_DATE, DATE_TO_DATETIME }
     private record Layout(List<Mapping> mappings, List<Column> columns, List<Kind> kinds, List<ColumnPlan> plans, List<String> notes, List<String> warnings,
-                          List<String> ddl, Set<String> keepIdentity) {}
+                          List<String> ddl, Set<String> keepIdentity, List<FkPlan> fkPlans) {}
 
     // ---------------------------------------------------------------- 파일(표) → 신규 DB 테이블 생성
     public record CreatePlan(String dbms, String schema, String tableName, int rows, List<String> columns, boolean createsTable, List<String> ddl, List<String> warnings) {}
-    private List<TableDdl.Col> columnsFor(Table table) {
+    private List<TableDdl.Col> columnsFor(Table table, Set<String> pk) {
         List<TableDdl.Col> cols = new ArrayList<>();
         for (Column c : table.columns()) {
             if (!c.included()) continue;
@@ -79,28 +79,53 @@ public class MigrationService {
                 int n = Math.max(c.maxLength() == null ? 0 : c.maxLength(), longest);
                 size = c.maxLength() != null ? c.maxLength() : Math.max(50, ((n * 2 + 49) / 50) * 50); // 길이를 지정하지 않으면 실제 최대 길이의 2배(50 단위)
             } else if (c.precision() != null) size = c.precision();
-            cols.add(new TableDdl.Col(c.targetName(), c.dataType(), c.nullable(), false, size, c.scale() == null ? 0 : c.scale()));
+            cols.add(new TableDdl.Col(c.targetName(), c.dataType(), c.nullable(), pk.contains(c.targetName().toLowerCase(Locale.ROOT)), size, c.scale() == null ? 0 : c.scale()));
         }
         return cols;
     }
     /** 대상에 아직 없는 테이블을 변환한 표의 컬럼 정의로 만드는 계획(CREATE TABLE). 아무것도 쓰지 않는다. */
-    public CreatePlan planCreate(Credentials target, Table table, String schema, String name) {
+    public CreatePlan planCreate(Credentials target, Table table, String schema, String name) { return planCreate(target, table, schema, name, List.of()); }
+    /** primaryKey: 기본 키로 지정할 대상 컬럼 이름(생략하면 기본 키 없이 생성). 빈 값·중복 값이 있으면 만들 수 없다. */
+    public CreatePlan planCreate(Credentials target, Table table, String schema, String name, List<String> primaryKey) {
         validateOnly(table);
+        Set<String> pk = checkPrimaryKey(table, primaryKey);
         if (name.equalsIgnoreCase(RECEIPTS)) throw new IllegalArgumentException("영수증 테이블 이름은 사용할 수 없습니다.");
         boolean[] present = explorer.withConnection(target, true, connection -> new boolean[]{exists(connection, target.dbms(), schema, name), exists(connection, target.dbms(), schema, RECEIPTS)});
         if (present[0]) throw new IllegalArgumentException("이미 있는 테이블입니다: " + schema + "." + name + ". '기존 테이블에 적재'를 선택하거나 다른 이름을 입력하세요.");
-        List<TableDdl.Col> cols = columnsFor(table);
+        List<TableDdl.Col> cols = columnsFor(table, pk);
         List<String> ddl = new ArrayList<>(List.of(TableDdl.createTable(target.dbms(), schema, name, cols)));
         if (!present[1]) ddl.add(TableDdl.receiptsTable(target.dbms(), schema));
-        List<String> warnings = new ArrayList<>(List.of("기본 키 없이 생성됩니다. 필요하면 적재 후 DB에서 직접 추가하세요."));
+        List<String> warnings = new ArrayList<>();
+        if (pk.isEmpty()) warnings.add("기본 키 없이 생성됩니다. 필요하면 적재 후 DB에서 직접 추가하세요.");
         if (target.dbms() != Dbms.postgresql) warnings.add("이 DB는 테이블 생성(DDL)을 되돌릴 수 없습니다. 적재가 실패하면 빈 테이블이 남을 수 있습니다.");
         return new CreatePlan(target.dbms().name(), schema, name, table.rows().size(), cols.stream().map(TableDdl.Col::name).toList(), true, ddl, warnings);
     }
     /** 적재 직전에 테이블이 없으면 만든다. 이미 있으면(같은 요청의 재시도) 건너뛰어 같은 요청 ID로 안전하게 다시 보낼 수 있다. */
-    public void ensureTable(Credentials target, Table table, String schema, String name) {
+    private Set<String> checkPrimaryKey(Table table, List<String> primaryKey) {
+        Set<String> pk = new LinkedHashSet<>();
+        if (primaryKey == null) return pk;
+        for (String p : primaryKey) if (p != null && !p.isBlank()) pk.add(p.strip().toLowerCase(Locale.ROOT));
+        if (pk.isEmpty()) return pk;
+        List<Column> keyColumns = new ArrayList<>();
+        for (String want : pk) {
+            Column found = table.columns().stream().filter(c -> c.included() && c.targetName().toLowerCase(Locale.ROOT).equals(want)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("기본 키로 지정한 컬럼이 변환한 표에 없거나 제외되어 있습니다: " + want));
+            keyColumns.add(found);
+        }
+        Table normalized = engine.transform(table); Set<String> seen = new HashSet<>(); int empty = 0, duplicate = 0;
+        for (Row r : normalized.rows()) {
+            StringBuilder key = new StringBuilder(); boolean blank = false;
+            for (Column c : keyColumns) { var cell = r.cells().get(c.id()); String v = cell == null ? null : cell.value(); if (v == null || v.isBlank()) blank = true; key.append(v).append('\u0001'); }
+            if (blank) empty++; else if (!seen.add(key.toString())) duplicate++;
+        }
+        if (empty > 0 || duplicate > 0) throw new IllegalArgumentException("기본 키로 지정한 컬럼(" + String.join(", ", pk) + ")에 " + (empty > 0 ? "빈 값 " + empty + "건" : "") + (empty > 0 && duplicate > 0 ? ", " : "") + (duplicate > 0 ? "중복 값 " + duplicate + "건" : "") + "이 있어 기본 키로 만들 수 없습니다. 다른 컬럼을 고르거나 데이터를 고쳐주세요.");
+        return pk;
+    }
+    public void ensureTable(Credentials target, Table table, String schema, String name) { ensureTable(target, table, schema, name, List.of()); }
+    public void ensureTable(Credentials target, Table table, String schema, String name, List<String> primaryKey) {
         boolean exists = explorer.withConnection(target, true, connection -> exists(connection, target.dbms(), schema, name));
         if (exists) return;
-        var plan = planCreate(target, table, schema, name);
+        var plan = planCreate(target, table, schema, name, primaryKey);
         explorer.withConnection(target, false, connection -> {
             for (String statement : plan.ddl()) try (var st = connection.createStatement()) { st.setQueryTimeout(30); st.execute(statement); }
             return null;
@@ -108,17 +133,25 @@ public class MigrationService {
     }
 
     // ---------------------------------------------------------------- 매핑 분석(값 검증 없이 컬럼 호환성만)
-    public record Analysis(long sourceRows, long maxRows, List<ColumnPlan> columns, List<String> notes, List<String> warnings, boolean createsTable, List<String> ddl) {}
+    /** 신규 테이블 생성 시 원본에서 함께 복제할 항목. */
+    public record Extras(boolean indexes, boolean defaults, boolean foreignKeys) { public static final Extras NONE = new Extras(false, false, false); }
+    /** 원본 외래 키 한 건의 이관 안내: 부모 테이블이 대상에 있는지, 복제하는지, 먼저 이관할 테이블은 무엇인지. */
+    public record FkPlan(String name, List<String> columns, String parentTable, boolean parentInTarget, boolean copied, String message) {}
+    public record Analysis(long sourceRows, long maxRows, List<ColumnPlan> columns, List<String> notes, List<String> warnings, boolean createsTable, List<String> ddl, List<FkPlan> foreignKeys) {}
     /**
      * 컬럼 매핑 화면용. 행 값은 검증하지 않고 컬럼 메타데이터로 호환성(타입·길이·정밀도)과 필요한 변환을 판정한다.
      * 길이 위험이 있는 문자열 컬럼은 원본의 실제 최대 길이를 한 번 조회한다. 아무것도 쓰지 않는다.
      */
     public Analysis analyze(Credentials source, String sourceSchema, String sourceTable, Credentials target, String targetSchema,
                             String targetTable, List<Mapping> mappings, boolean createTable, boolean preserveKeys) {
+        return analyze(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, createTable, preserveKeys, Extras.NONE);
+    }
+    public Analysis analyze(Credentials source, String sourceSchema, String sourceTable, Credentials target, String targetSchema,
+                            String targetTable, List<Mapping> mappings, boolean createTable, boolean preserveKeys, Extras extras) {
         validateMappings(mappings);
         Table shape = reader.read(source, sourceSchema, sourceTable, mappings.stream().map(Mapping::source).toList(), 1);
-        Layout layout = layout(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, createTable, preserveKeys, shape);
-        return new Analysis(reader.count(source, sourceSchema, sourceTable), maxRows, layout.plans(), layout.notes(), layout.warnings(), !layout.ddl().isEmpty(), layout.ddl());
+        Layout layout = layout(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, createTable, preserveKeys, extras, shape);
+        return new Analysis(reader.count(source, sourceSchema, sourceTable), maxRows, layout.plans(), layout.notes(), layout.warnings(), !layout.ddl().isEmpty(), layout.ddl(), layout.fkPlans());
     }
 
     // ---------------------------------------------------------------- 점검(Dry-run)
@@ -134,26 +167,30 @@ public class MigrationService {
     /** chunk: 이번 작업의 분할 단위(행). 서버가 허용하는 100~10,000행으로 보정한다. */
     public Plan check(Credentials source, String sourceSchema, String sourceTable, Credentials target, String targetSchema,
                       String targetTable, List<Mapping> mappings, int limit, boolean createTable, boolean preserveKeys, int chunk) {
+        return check(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, limit, createTable, preserveKeys, chunk, Extras.NONE);
+    }
+    public Plan check(Credentials source, String sourceSchema, String sourceTable, Credentials target, String targetSchema,
+                      String targetTable, List<Mapping> mappings, int limit, boolean createTable, boolean preserveKeys, int chunk, Extras extras) {
         validateMappings(mappings);
-        if (limit > JdbcReader.MAX_ROWS) return checkBulk(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, limit, createTable, preserveKeys, clampChunk(chunk));
+        if (limit > JdbcReader.MAX_ROWS) return checkBulk(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, limit, createTable, preserveKeys, clampChunk(chunk), extras);
         var counted = reader.readCounted(source, sourceSchema, sourceTable, mappings.stream().map(Mapping::source).toList(), limit);
         if (counted.totalRows() > limit)
             throw new IllegalArgumentException("원본이 " + counted.totalRows() + "행으로 최대 이관 행 수(" + limit + ")보다 많습니다. 일부만 이관하는 것을 막았습니다. 한도를 "
                 + JdbcReader.MAX_ROWS + "행보다 크게 올리면 대용량(분할) 이관을 사용할 수 있습니다.");
-        Layout layout = layout(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, createTable, preserveKeys, counted.table());
+        Layout layout = layout(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, createTable, preserveKeys, extras, counted.table());
         Table table = materialize(layout, counted.table());
         verify(target, targetSchema, targetTable, layout, table);
         return plan(source, sourceSchema, sourceTable, target, targetSchema, targetTable, layout, counted.totalRows(), table.rows().size(), false, 0, 0);
     }
     private Plan checkBulk(Credentials source, String sourceSchema, String sourceTable, Credentials target, String targetSchema,
-                           String targetTable, List<Mapping> mappings, int limit, boolean createTable, boolean preserveKeys, int chunk) {
+                           String targetTable, List<Mapping> mappings, int limit, boolean createTable, boolean preserveKeys, int chunk, Extras extras) {
         long total = reader.count(source, sourceSchema, sourceTable);
         if (total > limit) throw new IllegalArgumentException("원본이 " + total + "행으로 최대 이관 행 수(" + limit + ")보다 많습니다. 일부만 이관하는 것을 막았습니다. 한도를 올려주세요.");
         if (total > maxRows) throw new IllegalArgumentException("원본이 " + total + "행으로 서버 한도(" + maxRows + "행)를 넘습니다. 더 작은 단위로 나눠 이관해주세요.");
         if (total == 0) throw new IllegalArgumentException("이관할 데이터가 없습니다.");
         List<String> names = mappings.stream().map(Mapping::source).toList();
         Table sample = reader.readPage(source, sourceSchema, sourceTable, names, 0, (int) Math.min(SAMPLE_ROWS, total));
-        Layout layout = layout(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, createTable, preserveKeys, sample);
+        Layout layout = layout(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, createTable, preserveKeys, extras, sample);
         Table table = materialize(layout, sample);
         verify(target, targetSchema, targetTable, layout, table);
         int chunks = (int) ((total + chunk - 1) / chunk);
@@ -179,12 +216,16 @@ public class MigrationService {
     }
     public Outcome execute(Credentials source, String sourceSchema, String sourceTable, Credentials target, String targetSchema,
                            String targetTable, List<Mapping> mappings, int limit, boolean createTable, boolean preserveKeys, String requestId) {
+        return execute(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, limit, createTable, preserveKeys, requestId, Extras.NONE);
+    }
+    public Outcome execute(Credentials source, String sourceSchema, String sourceTable, Credentials target, String targetSchema,
+                           String targetTable, List<Mapping> mappings, int limit, boolean createTable, boolean preserveKeys, String requestId, Extras extras) {
         if (limit > JdbcReader.MAX_ROWS) throw new IllegalArgumentException("행 수가 " + JdbcReader.MAX_ROWS + "을 넘는 이관은 백그라운드 작업(/connections/migrate/jobs)으로 실행해주세요.");
         validateMappings(mappings);
         var counted = reader.readCounted(source, sourceSchema, sourceTable, mappings.stream().map(Mapping::source).toList(), limit);
         if (counted.totalRows() > limit)
             throw new IllegalArgumentException("원본이 " + counted.totalRows() + "행으로 최대 이관 행 수(" + limit + ")보다 많습니다. 일부만 이관하는 것을 막았습니다.");
-        Layout layout = layout(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, createTable, preserveKeys, counted.table());
+        Layout layout = layout(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, createTable, preserveKeys, extras, counted.table());
         Table table = materialize(layout, counted.table());
         createIfNeeded(target, layout, table);
         var result = loader.load(target, table, targetSchema, targetTable, requestId, layout.keepIdentity());
@@ -200,6 +241,10 @@ public class MigrationService {
     /** chunk: 이번 작업의 분할 단위(행). 서버가 허용하는 100~10,000행으로 보정한다. */
     public Outcome runBulk(Credentials source, String sourceSchema, String sourceTable, Credentials target, String targetSchema, String targetTable,
                            List<Mapping> mappings, int limit, boolean createTable, boolean preserveKeys, String requestId, Progress progress, int chunkRequested) {
+        return runBulk(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, limit, createTable, preserveKeys, requestId, progress, chunkRequested, Extras.NONE);
+    }
+    public Outcome runBulk(Credentials source, String sourceSchema, String sourceTable, Credentials target, String targetSchema, String targetTable,
+                           List<Mapping> mappings, int limit, boolean createTable, boolean preserveKeys, String requestId, Progress progress, int chunkRequested, Extras extras) {
         final int chunk = clampChunk(chunkRequested);
         validateMappings(mappings);
         long total = reader.count(source, sourceSchema, sourceTable);
@@ -208,7 +253,7 @@ public class MigrationService {
         if (total == 0) throw new IllegalArgumentException("이관할 데이터가 없습니다.");
         List<String> names = mappings.stream().map(Mapping::source).toList();
         Table sample = reader.readPage(source, sourceSchema, sourceTable, names, 0, (int) Math.min(SAMPLE_ROWS, total));
-        Layout layout = layout(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, createTable, preserveKeys, sample);
+        Layout layout = layout(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, createTable, preserveKeys, extras, sample);
         createIfNeeded(target, layout, materialize(layout, sample));
         int chunks = (int) ((total + chunk - 1) / chunk);
         progress.total(chunks, total);
@@ -381,12 +426,15 @@ public class MigrationService {
 
     /** 메타데이터만으로 컬럼 매핑·변환 규칙·DDL·경고를 정한다(행 값은 보지 않는다). shape는 컬럼 정의(id·자료형)를 얻기 위한 읽기 결과. */
     private Layout layout(Credentials source, String sourceSchema, String sourceTable, Credentials target, String targetSchema, String targetTable,
-                          List<Mapping> mappings, boolean createTable, boolean preserveKeys, Table shape) {
+                          List<Mapping> mappings, boolean createTable, boolean preserveKeys, Extras extras, Table shape) {
         boolean[] present = explorer.withConnection(target, true, connection -> new boolean[]{exists(connection, target.dbms(), targetSchema, targetTable), exists(connection, target.dbms(), targetSchema, RECEIPTS)});
         boolean tableExists = present[0], receiptsExist = present[1];
         if (!tableExists && !createTable)
             throw new IllegalArgumentException("대상 테이블이 없습니다: " + targetSchema + "." + targetTable + ". 먼저 준비하거나 '대상 테이블이 없으면 생성'을 선택해주세요.");
         boolean creating = createTable && (!tableExists || !receiptsExist);
+        JdbcExplorer.TableExtras srcExtras; // 인덱스·외래 키·기본값(읽지 못하면 비어 있는 것으로 보고 복제만 건너뛴다)
+        try { srcExtras = explorer.extras(source, sourceSchema, sourceTable); } catch (RuntimeException e) { srcExtras = new JdbcExplorer.TableExtras(List.of(), List.of(), Map.of()); }
+        final JdbcExplorer.TableExtras sx = srcExtras;
         Map<String, ColumnInfo> targetColumns = new HashMap<>();
         if (tableExists) for (var c : explorer.columns(target, targetSchema, targetTable).items()) targetColumns.put(c.name(), c);
         Map<String, ColumnInfo> sourceColumns = new HashMap<>();
@@ -404,7 +452,15 @@ public class MigrationService {
                 DataType newType = m.type() != null ? m.type() : column.dataType();
                 int newSize = m.size() != null ? m.size() : sourceInfo == null ? 0 : sourceInfo.size();
                 int newScale = m.scale() != null ? m.scale() : sourceInfo == null ? 0 : sourceInfo.scale();
-                newColumns.add(new TableDdl.Col(m.target(), newType, sourceInfo == null || sourceInfo.nullable(), sourceInfo != null && sourceInfo.primaryKey() && allKeysMapped, newSize, newScale));
+                String defSql = null; // 기본값 복제: 숫자·문자·불리언·현재 시각만 옮기고 시퀀스·함수는 건너뛴다
+                if (extras.defaults() && !m.overridden()) {
+                    String raw = sx.defaults().get(m.source());
+                    if (raw != null) {
+                        defSql = TableDdl.convertDefault(source.dbms(), target.dbms(), newType, raw);
+                        if (defSql == null && !raw.toLowerCase(Locale.ROOT).contains("nextval")) warnings.add("컬럼 " + m.source() + "의 기본값(" + raw + ")은 DB 함수·표현식이라 복제하지 않았습니다.");
+                    }
+                }
+                newColumns.add(new TableDdl.Col(m.target(), newType, sourceInfo == null || sourceInfo.nullable(), sourceInfo != null && sourceInfo.primaryKey() && allKeysMapped, newSize, newScale, defSql));
                 if (sourceInfo != null && sourceInfo.autoIncrement()) warnings.add("원본 자동 증가 컬럼 " + m.source() + "은 일반 컬럼으로 생성됩니다(원본 값은 그대로 들어가며 자동 증가 속성은 복제하지 않음).");
                 plans.add(describeNew(source, sourceSchema, sourceTable, m, sourceInfo, column.dataType(), newType, newSize, newScale, warnings));
                 // 대상 타입을 직접 지정한 컬럼만 그 정의(길이·정밀도)로 값을 검증한다. 지정하지 않으면 기존 동작 그대로.
@@ -456,10 +512,49 @@ public class MigrationService {
             for (String fk : foreignKeys(target, targetSchema, targetTable))
                 warnings.add("대상 외래 키 " + fk + " — 부모 테이블에 해당 행이 먼저 있어야 하며, 없으면 전체 롤백됩니다.");
         }
+        Map<String, String> mapped = new HashMap<>(); for (Mapping mm : mappings) mapped.put(mm.source(), mm.target());
+        String shortName = targetTable.length() > 40 ? targetTable.substring(0, 40) : targetTable;
+        if (!tableExists && extras.indexes()) { // 보조 인덱스 복제(기본 키 인덱스는 제외)
+            int n = 0;
+            for (var idx : sx.indexes()) {
+                if (!mapped.keySet().containsAll(idx.columns())) { notes.add("인덱스 " + idx.name() + "은(는) 일부 컬럼이 이관 제외라 복제하지 않았습니다."); continue; }
+                List<String> idxCols = new ArrayList<>(); for (String c : idx.columns()) idxCols.add(mapped.get(c));
+                ddl.add(TableDdl.createIndex(target.dbms(), targetSchema, targetTable, "ix_" + shortName + "_" + (++n), idx.unique(), idxCols));
+                notes.add("인덱스 " + idx.name() + (idx.unique() ? "(고유)" : "") + " 복제: " + String.join(", ", idx.columns()));
+            }
+        }
+        // 외래 키: 부모 테이블이 대상에 있는지 확인해 이관 순서를 안내하고, 옵션이면 FK를 생성한다.
+        List<FkPlan> fkPlans = new ArrayList<>(); int fkn = 0;
+        List<String> targetTableNames;
+        try { targetTableNames = explorer.tables(target, targetSchema).items(); } catch (RuntimeException e) { targetTableNames = List.of(); }
+        for (var fk : sx.foreignKeys()) {
+            String parentActual = null;
+            for (String t : targetTableNames) if (t.equalsIgnoreCase(fk.parentTable())) { parentActual = t; break; }
+            boolean self = fk.parentTable().equalsIgnoreCase(sourceTable), colsMapped = mapped.keySet().containsAll(fk.columns()), copied = false;
+            String msg;
+            if (self) msg = "자기 자신을 참조하는 FK는 복제하지 않습니다.";
+            else if (parentActual == null) {
+                msg = "부모 테이블 " + fk.parentTable() + "이(가) 대상에 없습니다. 먼저 " + fk.parentTable() + "을(를) 이관한 뒤 이 테이블을 이관하세요.";
+                warnings.add("외래 키 " + String.join(", ", fk.columns()) + " → " + fk.parentTable() + ": " + msg);
+            } else if (tableExists) msg = "대상 테이블이 이미 있으므로 대상의 기존 FK 구조를 사용합니다. 부모 테이블 " + parentActual + "에 해당 행이 있어야 합니다.";
+            else if (!extras.foreignKeys()) msg = "대상에 " + parentActual + "이(가) 있습니다. 'FK 복제'를 선택하면 외래 키를 생성합니다.";
+            else if (!colsMapped) msg = "일부 컬럼이 이관 제외라 FK를 복제하지 않습니다.";
+            else {
+                List<String> parentCols;
+                try { parentCols = new ArrayList<>(); for (var c : explorer.columns(target, targetSchema, parentActual).items()) parentCols.add(c.name()); } catch (RuntimeException e) { parentCols = List.of(); }
+                List<String> pc = new ArrayList<>();
+                for (String want : fk.parentColumns()) { String found = null; for (String have : parentCols) if (have.equalsIgnoreCase(want)) { found = have; break; } if (found == null) { pc = null; break; } pc.add(found); }
+                if (pc == null) msg = "대상의 " + parentActual + "에 참조 컬럼이 없어 FK를 복제하지 않습니다.";
+                else {
+                    List<String> fkCols = new ArrayList<>(); for (String c : fk.columns()) fkCols.add(mapped.get(c));
+                    ddl.add(TableDdl.addForeignKey(target.dbms(), targetSchema, targetTable, "fk_" + shortName + "_" + (++fkn), fkCols, targetSchema, parentActual, pc));
+                    msg = "대상의 " + parentActual + "을(를) 참조하는 FK를 생성합니다."; copied = true;
+                }
+            }
+            fkPlans.add(new FkPlan(fk.name(), fk.columns(), fk.parentTable(), parentActual != null, copied, msg));
+        }
         if (creating && !receiptsExist) ddl.add(TableDdl.receiptsTable(target.dbms(), targetSchema));
-        for (String fk : foreignKeys(source, sourceSchema, sourceTable))
-            warnings.add("원본 외래 키 " + fk + " — 부모 테이블을 먼저 이관하세요. 외래 키는 대상에 복제하지 않습니다.");
-        return new Layout(mappings, columns, kinds, plans, notes, warnings, ddl, keepIdentity);
+        return new Layout(mappings, columns, kinds, plans, notes, warnings, ddl, keepIdentity, fkPlans);
     }
 
     /** 레이아웃의 값 변환을 행에 적용한다(청크마다 호출). */

@@ -32,6 +32,36 @@ class MigrationCompatIntegrationTests {
     String integer(Dbms db){return db==Dbms.oracle?"NUMBER(10)":"INTEGER";}
     String engine(Dbms db){return family(db)?" ENGINE=InnoDB":"";}
 
+    @ParameterizedTest(name="new-table types {0} -> {1}")
+    @CsvSource({"oracle,postgresql","postgresql,oracle","mysql,mariadb","mariadb,postgresql"})
+    void newTableAcceptsChosenTypesAndLengths(Dbms from,Dbms to)throws Exception {
+        var enabled=Arrays.asList(System.getenv().getOrDefault("TABLEFLOW_TEST_JDBC_DBMS","postgresql,mysql,mariadb").split(","));
+        Assumptions.assumeTrue(enabled.contains(from.name()) && enabled.contains(to.name()));
+        var src=credentials(from); var tgt=credentials(to);
+        try(var s=DriverManager.getConnection(explorer.url(src),explorer.properties(src));var t=DriverManager.getConnection(explorer.url(tgt),explorer.properties(tgt))) {
+            String sTable=q(from,"TF_TYP_SRC");
+            dropQuiet(s,sTable); dropQuiet(t,q(to,"TF_TYP_DST")); dropQuiet(t,q(to,"tableflow_load_receipts"));
+            exec(s,"CREATE TABLE "+sTable+" ("+q(from,"ID")+" INTEGER PRIMARY KEY,"+q(from,"NAME")+" "+text(from)+"(100),"+q(from,"NOTE")+" "+text(from)+"(50))"+engine(from));
+            exec(s,"INSERT INTO "+sTable+" VALUES (1,'"+"가".repeat(30)+"','10')"); exec(s,"INSERT INTO "+sTable+" VALUES (2,'짧음','20')");
+            var integer=dev.tableflow.model.Table.DataType.integer;
+            // 길이를 너무 짧게 지정하면 실제 값 기준으로 오류
+            var tooShort=migration.analyze(src,schema(from),"TF_TYP_SRC",tgt,schema(to),"TF_TYP_DST",List.of(new Mapping("ID","ID"),new Mapping("NAME","NAME",null,20,null),new Mapping("NOTE","NOTE")),true,false);
+            var name=tooShort.columns().stream().filter(c->c.source().equals("NAME")).findFirst().orElseThrow();
+            assertEquals("error",name.level(),name.toString()); assertTrue(name.detail().contains("지정한 길이(20자)")&&name.detail().contains("1건"),name.detail());
+            // 충분한 길이는 통과하고, 문자열을 정수로 지정하면 변환 위험을 알린다
+            var map=List.of(new Mapping("ID","ID"),new Mapping("NAME","NAME",null,40,null),new Mapping("NOTE","NOTE",integer,null,null));
+            var ok=migration.analyze(src,schema(from),"TF_TYP_SRC",tgt,schema(to),"TF_TYP_DST",map,true,false);
+            assertEquals("ok",ok.columns().stream().filter(c->c.source().equals("NAME")).findFirst().orElseThrow().level());
+            assertEquals("warn",ok.columns().stream().filter(c->c.source().equals("NOTE")).findFirst().orElseThrow().level());
+            // 실제 이관: 지정한 길이·타입으로 대상이 만들어진다
+            assertEquals(2,migration.execute(src,schema(from),"TF_TYP_SRC",tgt,schema(to),"TF_TYP_DST",map,100,true,false,UUID.randomUUID().toString()).insertedRows());
+            var cols=new HashMap<String,JdbcExplorer.ColumnInfo>(); explorer.columns(tgt,schema(to),"TF_TYP_DST").items().forEach(c->cols.put(c.name().toUpperCase(),c));
+            assertEquals(40,cols.get("NAME").size());
+            assertTrue(List.of(Types.INTEGER,Types.BIGINT,Types.NUMERIC,Types.DECIMAL).contains(cols.get("NOTE").jdbcType()),cols.get("NOTE").toString());
+            dropQuiet(s,sTable); dropQuiet(t,q(to,"TF_TYP_DST")); dropQuiet(t,q(to,"tableflow_load_receipts"));
+        }
+    }
+
     @ParameterizedTest(name="{0} -> {1}")
     @CsvSource({"oracle,postgresql","postgresql,oracle","mysql,mariadb","mariadb,postgresql"})
     void judgesTypeLengthAndPrecisionBeforeMigrating(Dbms from,Dbms to)throws Exception {

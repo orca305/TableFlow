@@ -91,6 +91,12 @@ public class ConnectionStore {
         return removed;
     }
 
+    /** 접속 정보가 같고 비밀번호가 저장된 연결이 있으면 그 ID(재개 때 비밀번호를 다시 묻지 않기 위해). 없으면 null. */
+    public synchronized String findSavedId(Credentials c) {
+        if (!enabled) return null;
+        return read().stream().filter(s -> s.password() != null && s.dbms() == c.dbms() && s.host().equalsIgnoreCase(c.host()) && s.port() == c.port()
+            && s.database().equals(c.database()) && s.username().equals(c.username()) && s.tls() == c.tls()).map(Stored::id).findFirst().orElse(null);
+    }
     /** 요청의 접속 정보가 저장된 연결과 일치할 때만 저장된 비밀번호를 돌려준다. */
     public synchronized String passwordFor(Credentials c) {
         requireEnabled();
