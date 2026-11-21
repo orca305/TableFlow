@@ -138,3 +138,6 @@ Credentials: `{dbms:oracle|postgresql|mysql|mariadb,host,port,database,username,
 - `POST /connections/migrate/analyze` 응답에 `foreignKeys[{name, columns, parentTable, parentInTarget, copied, message}]`가 추가되었다(부모 테이블 이관 순서 안내).
 - `GET /connections/migrate/jobs` → `{enabled, items:[{status, source, target, resumable, sourceNeedsPassword, targetNeedsPassword}]}` 이관 작업 목록. **서버를 다시 시작해도 유지**되며(`data/jobs.json`, git 제외), 그때 실행 중이던 작업은 `failed/SERVER_RESTARTED`로 복원된다.
 - `POST /connections/migrate/jobs/{id}/resume` `{sourcePassword?, targetPassword?}` → 같은 요청 ID로 다시 시작해 완료된 분할은 건너뛰고 이어서 진행한다. 저장된 비밀번호가 있는 연결은 비밀번호 없이, 없는 쪽만 비밀번호를 받는다. 저장 파일에는 비밀번호가 들어가지 않는다.
+
+### 추가 (이관 순서)
+- `POST /connections/order` `{connection, schema, tables[]}` → `{order:[{table, level, parents[], externalParents[]}], cycles[]}`. 선택한 테이블의 외래 키를 읽어 부모가 먼저 오도록 단계(level 0 = 부모 없음)를 계산한다. 서로 참조하는 테이블은 `cycles`로 돌려준다(읽기 전용, 최대 200개).
