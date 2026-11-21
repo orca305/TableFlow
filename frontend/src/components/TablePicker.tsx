@@ -10,10 +10,11 @@ export type Picked = { schema: string; table: string; columns: DbColumn[] };
 type Props = {
   role: "원본" | "대상"; verified: Verified | null; disabled?: boolean; showTable?: boolean; tableHelp: string;
   onSchema?: (schema: string) => void; onPick?: (picked: Picked | null) => void;
+  onTables?: (tables: string[]) => void; forceTable?: { name: string; n: number } | null; // 바깥에서 테이블을 골라 달라고 요청(이관 순서·부모 테이블 이동)
 };
 
 /** 연결 확인이 끝난 DB의 스키마와 테이블을 고르고, 선택한 테이블의 컬럼을 조회해 알려준다. */
-export default function TablePicker({ role, verified, disabled = false, showTable = true, tableHelp, onSchema, onPick }: Props) {
+export default function TablePicker({ role, verified, disabled = false, showTable = true, tableHelp, onSchema, onPick, onTables, forceTable }: Props) {
   const [schemas, setSchemas] = useState<string[]>([]);
   const [tables, setTables] = useState<string[]>([]);
   const [schema, setSchema] = useState(""); const [table, setTable] = useState("");
@@ -37,10 +38,16 @@ export default function TablePicker({ role, verified, disabled = false, showTabl
     if (!verified || !schema || !showTable) { setTables([]); return; }
     const mine = ++token.current; setBusy(true);
     request("/connections/tables", { connection: verified.connection, schema }).then(r => r.json()).then(result => {
-      if (mine !== token.current) return; setTables(result.items); if (!result.items.length) setError("조회 가능한 테이블이 없습니다.");
+      if (mine !== token.current) return; setTables(result.items); onTables?.(result.items); if (!result.items.length) setError("조회 가능한 테이블이 없습니다.");
     }).catch(reason => { if (mine === token.current) setError(reason instanceof Error ? reason.message : "테이블을 조회하지 못했습니다."); })
       .finally(() => { if (mine === token.current) setBusy(false); });
   }, [verified, schema, showTable]);
+  useEffect(() => {
+    if (!forceTable || !tables.length) return;
+    const hit = tables.find(t => t.toLowerCase() === forceTable.name.toLowerCase());
+    if (hit) void pickTable(hit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forceTable, tables]);
   async function pickTable(next: string) {
     setTable(next); setError(""); onPick?.(null);
     if (!next || !verified) return;

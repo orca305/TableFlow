@@ -303,3 +303,69 @@ CREATE TABLE tf_ui_res (id integer PRIMARY KEY, name varchar(20));`);
     try { pg(`DROP TABLE IF EXISTS tf_ui_res;`); } catch {}
   }
 });
+
+test("real browser: 이관 순서 계산(FK 기준)과 부모 테이블 바로 이관 후 FK 생성", async ({ page }) => {
+  test.setTimeout(120_000);
+  oracle(`BEGIN EXECUTE IMMEDIATE 'DROP TABLE TF_O_C'; EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN EXECUTE IMMEDIATE 'DROP TABLE TF_O_P'; EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+CREATE TABLE TF_O_P (ID NUMBER(10) PRIMARY KEY, NAME VARCHAR2(20));
+CREATE TABLE TF_O_C (ID NUMBER(10) PRIMARY KEY, P_ID NUMBER(10) NOT NULL REFERENCES TF_O_P (ID), QTY NUMBER(5));
+INSERT INTO TF_O_P VALUES (1,'a');
+INSERT INTO TF_O_P VALUES (2,'b');
+INSERT INTO TF_O_C VALUES (10,1,5);
+INSERT INTO TF_O_C VALUES (11,2,6);
+COMMIT;`);
+  pg(`DROP TABLE IF EXISTS tf_o_c; DROP TABLE IF EXISTS tf_o_p; DROP TABLE IF EXISTS tableflow_load_receipts;`);
+  try {
+    await confirmSource(page, "TF_O_C");
+    // 순서 계산: 부모(TF_O_P)가 1단계, 자식(TF_O_C)이 2단계
+    await page.getByRole("button", { name: /^1 · 원본/ }).click();
+    const src = page.getByRole("region", { name: "원본 선택" });
+    await src.getByText("이관 순서 계산 (외래 키 기준)").click();
+    await src.getByRole("button", { name: "순서 계산", exact: true }).click();
+    const order = src.getByRole("status", { name: "이관 순서" });
+    await expect(order.locator(".row", { hasText: "1단계" }).getByRole("button", { name: "TF_O_P", exact: true })).toBeVisible();
+    await expect(order.locator(".row", { hasText: "2단계" }).getByRole("button", { name: "TF_O_C", exact: true })).toBeVisible();
+    // 자식을 원본으로 선택해 신규 테이블 + FK 복제로 분석하면 '부모 먼저 이관' 안내가 나온다.
+    await order.getByRole("button", { name: "TF_O_C", exact: true }).click();
+    await expect(src.getByLabel("원본 테이블", { exact: true })).toHaveValue("TF_O_C");
+    await src.getByRole("button", { name: "원본 확정", exact: true }).click();
+    const dst = await connectTarget(page);
+    await dst.getByLabel("신규 테이블 이름").fill("tf_o_c");
+    await dst.getByRole("checkbox", { name: "외래 키(FK) 복제" }).check();
+    await dst.getByRole("button", { name: "대상 확정", exact: true }).click();
+    const review = page.getByRole("region", { name: "검토" });
+    const guide = review.getByRole("status", { name: "이관 순서 안내" });
+    await expect(guide).toContainText("부모 먼저 이관");
+    // 버튼 한 번으로 부모 테이블 이관으로 이동 → 대상 이름이 부모 이름으로 채워진다.
+    await guide.getByRole("button", { name: "부모 테이블 이관" }).click();
+    await expect(src.getByLabel("원본 테이블", { exact: true })).toHaveValue("TF_O_P");
+    await src.getByRole("button", { name: "원본 확정", exact: true }).click();
+    await expect(dst.getByLabel("신규 테이블 이름")).toHaveValue("TF_O_P");
+    await dst.getByLabel("신규 테이블 이름").fill("tf_o_p");
+    await dst.getByRole("button", { name: "대상 확정", exact: true }).click();
+    const run = runPanel(page);
+    await run.getByRole("button", { name: "사전 점검" }).click();
+    await run.getByRole("checkbox", { name: /DB INSERT에 동의/ }).check();
+    await run.getByRole("button", { name: "이관 시작" }).click();
+    await expect(page.getByText("이관 완료: 2행", { exact: true })).toBeVisible();
+    // 부모가 대상에 생겼으므로 자식은 FK를 만들 수 있다.
+    await page.getByRole("button", { name: /^1 · 원본/ }).click();
+    await src.getByLabel("원본 테이블", { exact: true }).selectOption("TF_O_C");
+    await src.getByRole("button", { name: "원본 확정", exact: true }).click();
+    await dst.getByLabel("신규 테이블 이름").fill("tf_o_c");
+    await dst.getByRole("checkbox", { name: "외래 키(FK) 복제" }).check();
+    await dst.getByRole("button", { name: "대상 확정", exact: true }).click();
+    await expect(review.getByRole("status", { name: "이관 순서 안내" })).toContainText("FK 생성");
+    await run.getByRole("button", { name: "사전 점검" }).click();
+    await run.getByRole("checkbox", { name: /DB INSERT에 동의/ }).check();
+    await run.getByRole("button", { name: "이관 시작" }).click();
+    await expect(page.getByText("이관 완료: 2행", { exact: true })).toBeVisible();
+    expect(pg("SELECT count(*) FROM pg_constraint WHERE conrelid='tf_o_c'::regclass AND contype='f';").trim()).toBe("1");
+  } finally {
+    try { oracle(`DROP TABLE TF_O_C;\nDROP TABLE TF_O_P;`); } catch {}
+    try { pg(`DROP TABLE IF EXISTS tf_o_c; DROP TABLE IF EXISTS tf_o_p; DROP TABLE IF EXISTS tableflow_load_receipts;`); } catch {}
+  }
+});

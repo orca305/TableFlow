@@ -17,6 +17,8 @@ type Plan = { sourceDbms: string; targetDbms: string; source: string; target: st
   createsTable: boolean; ddl: string[]; warnings: string[]; bulk: boolean; chunks: number; chunkSize: number };
 type JobStatus = { id: string; state: "queued" | "running" | "succeeded" | "failed" | "cancelled"; totalRows: number; doneRows: number; totalChunks: number; doneChunks: number;
   replayedChunks: number; errorCode: string | null; message: string | null; notes: string[] };
+type OrderItem = { table: string; level: number; parents: string[]; externalParents: string[] };
+type OrderPlan = { order: OrderItem[]; cycles: string[] };
 type Step = "src" | "dst" | "map";
 type Override = { type?: DataType; size?: number; scale?: number }; // 신규 테이블 생성 시 직접 지정한 대상 타입·길이
 const TYPES: [DataType, string][] = [["string", "문자열"], ["integer", "정수"], ["decimal", "소수"], ["date", "날짜"], ["datetime", "일시"], ["bool", "불리언"]];
@@ -53,6 +55,8 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
   const [preserveKeys, setPreserveKeys] = useState(false);
   const [chunkText, setChunkText] = useState(""); const [mapping, setMapping] = useState<Record<string, string>>({});
   const [ov, setOv] = useState<Record<string, Override>>({});
+  const [srcTables, setSrcTables] = useState<string[]>([]); const [srcSchemaSel, setSrcSchemaSel] = useState("");
+  const [force, setForce] = useState<{ name: string; n: number } | null>(null); const [orderPlan, setOrderPlan] = useState<OrderPlan | null>(null);
   const [copyIdx, setCopyIdx] = useState(false); const [copyDef, setCopyDef] = useState(false); const [copyFk, setCopyFk] = useState(false);
   const [analysis, setAnalysis] = useState<Analysis | null>(null); const [analysisError, setAnalysisError] = useState("");
   const [preview, setPreview] = useState<Table | null>(null); const [previewError, setPreviewError] = useState("");
@@ -96,6 +100,11 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
     setSrc(picked); setSrcOk(false); setDstOk(false); setSrcRows(null); setAnalysis(null); setPreview(null); resetRun();
     if (!picked || !srcV) return;
     request("/connections/count", { connection: srcV.connection, schema: picked.schema, table: picked.table }).then(r => r.json()).then(r => setSrcRows(r.rows)).catch(() => setSrcRows(null));
+  }
+  /** FK의 부모 테이블을 먼저 이관하려고 원본 선택으로 돌아가 그 테이블을 고른다(대상은 같은 연결·스키마, 신규 테이블 모드). */
+  function goParent(name: string) {
+    setForce({ name, n: Date.now() }); setMode("new"); setNewName(name); setActive("src"); setSrcOk(false); setDstOk(false); resetRun();
+    setNotice(`부모 테이블 ${name}을(를) 먼저 이관하세요. '원본 확정'과 '대상 확정'을 누르면 같은 대상으로 이관할 수 있습니다. 끝나면 원래 테이블을 다시 선택하세요.`);
   }
   function confirmSource() { setSrcOk(true); setDstOk(false); resetRun(); setActive("dst"); }
   // ---- 대상 선택
@@ -187,7 +196,18 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
     <div role="region" hidden={active !== "src"} className="panel" aria-label="원본 선택"><h2>원본 선택<span className="hs">이관할 데이터가 있는 DB와 테이블을 선택하세요</span></h2>
       <div className="grid">
         <ConnectionPicker role="원본" server={server} saved={saved} onSavedChanged={reloadSaved} disabled={working} onVerified={v => { setSrcV(v); setSrc(null); setSrcOk(false); setDstOk(false); resetRun(); }} />
-        <TablePicker role="원본" verified={srcV} disabled={working} tableHelp="이관할 원본 테이블입니다. 선택하면 행 수가 자동으로 집계됩니다." onPick={onSrcPick} />
+        <TablePicker role="원본" verified={srcV} disabled={working} tableHelp="이관할 원본 테이블입니다. 선택하면 행 수가 자동으로 집계됩니다." onPick={onSrcPick} onTables={setSrcTables} onSchema={setSrcSchemaSel} forceTable={force} />
+        {srcTables.length > 1 && srcSchemaSel && <details><summary>이관 순서 계산 (외래 키 기준)</summary>
+          <div className="grid" style={{ marginTop: 10 }}>
+            <p className="mut">이 스키마의 테이블이 서로 참조하는 관계(FK)를 읽어, 부모 테이블이 먼저 오도록 이관 순서를 계산합니다. 테이블 이름을 누르면 원본으로 선택됩니다.</p>
+            <div><button type="button" className="btn" disabled={working || !srcV} data-tip="선택한 스키마의 테이블(최대 200개)의 외래 키를 읽어 이관 순서를 계산합니다. 아무것도 변경하지 않습니다." onClick={() => void run(async () => {
+              setOrderPlan(await (await request("/connections/order", { connection: srcV!.connection, schema: srcSchemaSel, tables: srcTables.slice(0, 200) })).json());
+            })}>순서 계산</button></div>
+            {orderPlan && <div className="grid" role="status" aria-label="이관 순서">
+              {[...new Set(orderPlan.order.map(i => i.level))].map(level => <div key={level} className="row"><b>{level + 1}단계{level === 0 ? " (부모 없음)" : ""}</b>
+                {orderPlan.order.filter(i => i.level === level).map(i => <button type="button" key={i.table} className="btn sm" data-tip={i.parents.length ? `먼저 이관: ${i.parents.join(", ")}` : i.externalParents.length ? `선택하지 않은 부모: ${i.externalParents.join(", ")}` : "부모 테이블 없음"} onClick={() => setForce({ name: i.table, n: Date.now() })}>{i.table}</button>)}</div>)}
+              {orderPlan.cycles.length > 0 && <div className="alert warning">서로 참조해 순서를 정할 수 없는 테이블: {orderPlan.cycles.join(", ")}. FK를 복제하지 않고 이관한 뒤 DB에서 FK를 추가하세요.</div>}
+            </div>}</div></details>}
         {src && <div className="chips"><span className="chip">{srcRows != null ? `총 ${fmt(srcRows)}행` : "행 수 확인 중"}</span><span className="chip">{src.columns.length}개 컬럼</span>{src.columns.some(c => UNSUPPORTED.has(c.jdbcType ?? 12)) && <span className="pill warn">이진 등 이관할 수 없는 컬럼은 자동으로 제외됩니다</span>}</div>}
         <div className="row"><button type="button" className="btn p" disabled={!srcV || !src || srcRows == null || working} data-tip="원본을 확정하고 대상 선택으로 넘어갑니다." onClick={confirmSource}>원본 확정</button>
           {!srcV && <span className="mut">연결 확인을 먼저 완료하세요</span>}</div>
@@ -240,7 +260,7 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
       <h2 style={{ marginTop: 26 }}>데이터 검증<Help text="형식 오류, 길이 초과, 호환되지 않는 타입을 찾아냅니다. 오류가 남아 있으면 이관을 시작할 수 없습니다." /><span className="hs">이관 전에 컬럼 호환성과 샘플 데이터를 확인합니다</span></h2>
       <div className="stats"><div className="stat"><b>{fmt(total)}</b><span>이관할 행 수</span></div><div className="stat"><b style={{ color: errors ? "var(--bad)" : undefined }}>{errors}</b><span>오류</span></div><div className="stat"><b style={{ color: warns ? "var(--warn)" : undefined }}>{warns}</b><span>경고</span></div><div className="stat"><b>{analysis ? analysis.columns.filter(c => c.level === "ok" || c.level === "info").length : 0}</b><span>정상 컬럼</span></div></div>
       {analysis && analysis.foreignKeys.length > 0 && <div className="alert" role="status" aria-label="이관 순서 안내" style={{ marginTop: 12 }}><strong>외래 키(FK) · 이관 순서</strong>
-        <ul>{analysis.foreignKeys.map(f => <li key={f.name}><span className={`pill ${f.copied ? "ok" : f.parentInTarget ? "" : "warn"}`}>{f.copied ? "FK 생성" : f.parentInTarget ? "부모 있음" : "부모 먼저 이관"}</span> {f.columns.join(", ")} → <b>{f.parentTable}</b> · {f.message}</li>)}</ul></div>}
+        <ul>{analysis.foreignKeys.map(f => <li key={f.name}><span className={`pill ${f.copied ? "ok" : f.parentInTarget ? "" : "warn"}`}>{f.copied ? "FK 생성" : f.parentInTarget ? "부모 있음" : "부모 먼저 이관"}</span> {f.columns.join(", ")} → <b>{f.parentTable}</b> · {f.message}{!f.parentInTarget && <> <button type="button" className="btn sm" disabled={working} data-tip="이 부모 테이블을 원본으로 선택해 먼저 이관합니다." onClick={() => goParent(f.parentTable)}>부모 테이블 이관</button></>}</li>)}</ul></div>}
       {analysis && (analysis.warnings.length > 0 || analysis.notes.length > 0 || analysis.createsTable) && <div className="grid" style={{ marginTop: 12 }}>
         {analysis.warnings.length > 0 && <div className="alert warning" role="status"><strong>확인 필요</strong><ul>{analysis.warnings.map(w => <li key={w}>{w}</li>)}</ul></div>}
         {analysis.notes.length > 0 && <div className="alert" role="status"><ul>{analysis.notes.map(n => <li key={n}>{n}</li>)}</ul></div>}
