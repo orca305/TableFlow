@@ -131,3 +131,10 @@ Credentials: `{dbms:oracle|postgresql|mysql|mariadb,host,port,database,username,
 ### 추가 (신규 테이블의 대상 타입 지정 · FK 표시)
 - `mappings[]` 항목에 선택 필드 `type`(string/integer/decimal/date/datetime/bool), `size`(문자열 길이 또는 숫자 정밀도), `scale`을 보낼 수 있다. **신규 테이블 생성(`createTable=true`)일 때만** 쓰이며, 생략하면 원본 정의를 따른다. 지정한 컬럼은 그 정의로 값을 검증하고, `/migrate/analyze`가 원본과 비교한 `level`/`detail`(길이 부족·형식 변환 위험 등)을 돌려준다.
 - `/connections/columns`의 컬럼 정보에 `foreignKey`(외래 키 여부)가 추가되었다.
+
+### 추가 (기본 키 지정 · 구조 복제 · 작업 영속화와 재개)
+- `POST /connections/load/check`·`/load`: `primaryKey`(대상 컬럼 이름 배열, 선택)를 보내면 신규 테이블을 그 기본 키로 만든다. 선택한 컬럼에 빈 값·중복 값이 있으면 거부한다.
+- `POST /connections/migrate/*`: 신규 테이블 생성(`createTable=true`)일 때 `copyIndexes`, `copyDefaults`, `copyForeignKeys`(기본 false)로 원본의 보조 인덱스·기본값·외래 키를 함께 만든다. 기본값은 숫자·문자·불리언·현재 시각만 옮기고(시퀀스·함수는 건너뛰고 경고), FK는 부모 테이블이 대상에 이미 있을 때만 생성한다.
+- `POST /connections/migrate/analyze` 응답에 `foreignKeys[{name, columns, parentTable, parentInTarget, copied, message}]`가 추가되었다(부모 테이블 이관 순서 안내).
+- `GET /connections/migrate/jobs` → `{enabled, items:[{status, source, target, resumable, sourceNeedsPassword, targetNeedsPassword}]}` 이관 작업 목록. **서버를 다시 시작해도 유지**되며(`data/jobs.json`, git 제외), 그때 실행 중이던 작업은 `failed/SERVER_RESTARTED`로 복원된다.
+- `POST /connections/migrate/jobs/{id}/resume` `{sourcePassword?, targetPassword?}` → 같은 요청 ID로 다시 시작해 완료된 분할은 건너뛰고 이어서 진행한다. 저장된 비밀번호가 있는 연결은 비밀번호 없이, 없는 쪽만 비밀번호를 받는다. 저장 파일에는 비밀번호가 들어가지 않는다.

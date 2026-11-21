@@ -120,4 +120,15 @@ npx playwright test tests/migration.spec.ts tests/db-to-file.spec.ts    # 기대
 3. 파일→DB 신규 테이블은 기본 키 없이 생성된다.
 4. 로컬 OCR 모델, 원격 CI, 공개 배포는 여전히 미검증.
 
-**2026-11-20 후속**: 신규 테이블 이관에서 대상 타입·길이·소수 자릿수를 컬럼별로 직접 지정(백엔드 `Mapping.type/size/scale`, 화면 검토 단계), 컬럼 매핑에 PK/FK 표시(`ColumnInfo.foreignKey`), 메뉴 활성 표시를 단색 채움으로 변경, 미리보기 표를 가로 스크롤 없이 폭에 맞춤(줄임표+툴팁). **이 후속 변경은 백엔드 기본 단위 테스트만 통과 확인했고, 실서버·Playwright 테스트는 아직 돌리지 않았다.**
+**2026-11-21 후속 (4건)**
+- **신규 테이블 대상 타입·길이 직접 지정**(`Mapping.type/size/scale`, 검토 화면), 컬럼 매핑에 PK/FK 표시(`ColumnInfo.foreignKey`), 메뉴 활성 표시 단색 채움, 미리보기 표를 가로 스크롤 없이 폭에 맞춤.
+- **파일→DB 신규 테이블 기본 키 지정**(`primaryKey`, 파일 변환의 DB 적재).
+- **신규 테이블 구조 복제**: 인덱스·기본값·FK(`Extras`, `TableDdl.createIndex/addForeignKey/convertDefault`, `JdbcExplorer.extras`) + **부모 테이블 이관 순서 안내**(`FkPlan`). 기본값은 리터럴·불리언·현재 시각만 옮긴다. DDL은 롤백되지 않는다(PostgreSQL 제외).
+- **작업 목록 영속화와 재개**(`JobStore`, `MigrationJobs.restore/list`, `/migrate/jobs`, `/resume`): 서버 재시작 후에도 목록이 남고 작업 이력 화면에서 재개한다. 비밀번호는 저장하지 않으며, 저장된 연결(savedId)이 아니면 재개 때 입력한다. 10,000행 이하의 동기 이관은 한 트랜잭션이라 목록에 남지 않는다.
+- **검증**: 백엔드 `gradlew test` + 실서버 4종 109개 통과(건너뜀 4), Playwright 26 통과(건너뜀 6: 로컬 OCR 4, 스크린샷 2). 신규 통합 테스트: `MigrationExtrasIntegrationTests`, 대상 타입 지정·기본 키 지정 케이스, `MigrationJobsPersistenceTests`, 재개 e2e.
+- **간헐 실패(미해결)**: 이전 전체 실행에서 같은 테스트가 가끔 "API에 연결할 수 없습니다"로 실패했다. 이번 실행(백엔드를 `--server.tomcat.keep-alive-timeout=120s --server.tomcat.max-keep-alive-requests=-1`로 띄움)과 직전 실행은 모두 통과했지만 원인은 확정하지 못했다.
+
+**남은 과제(우선순위 순)**
+1. 수십만 행 이관 성능 측정, 11/23 시연 리허설.
+2. 신규 테이블 FK는 부모가 대상에 있어야만 만든다(자동 이관 순서 계산은 없고 안내만 한다). 자기 참조 FK·복합 기본값 표현식은 복제하지 않는다.
+3. 로컬 OCR 모델, 원격 CI, 공개 배포 검증.
