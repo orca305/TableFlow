@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { remove, request } from "@/lib/api";
 import { suggestMapping } from "@/lib/workspace";
 import type { DataType, Table } from "@/lib/types";
@@ -8,6 +8,8 @@ import { DBMS_LABEL, type Dbms, type DbColumn, type SavedConnection, type Server
 import ConnectionPicker, { type Verified } from "./ConnectionPicker";
 import TablePicker, { type Picked } from "./TablePicker";
 import { Help, Pager } from "./ui";
+import ScheduleForm from "./ScheduleForm";
+import TransformEditor, { stepReady, summarize, type TransformStep } from "./TransformEditor";
 
 type Level = "ok" | "info" | "warn" | "error";
 type ColumnPlan = { source: string; target: string; sourceType: string; targetType: string; conversion: string; level: Level; detail: string };
@@ -53,8 +55,10 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
   const [dstSchema, setDstSchema] = useState(""); const [dst, setDst] = useState<Picked | null>(null); const [dstOk, setDstOk] = useState(false);
   const [mode, setMode] = useState<"new" | "existing">("new"); const [newName, setNewName] = useState("");
   const [preserveKeys, setPreserveKeys] = useState(false);
+  const [where, setWhere] = useState(""); const [whereRows, setWhereRows] = useState<number | null>(null); const [whereError, setWhereError] = useState(""); const [whereBusy, setWhereBusy] = useState(false);
   const [chunkText, setChunkText] = useState(""); const [mapping, setMapping] = useState<Record<string, string>>({});
   const [ov, setOv] = useState<Record<string, Override>>({});
+  const [rules, setRules] = useState<Record<string, TransformStep[]>>({}); const [openRule, setOpenRule] = useState("");
   const [srcTables, setSrcTables] = useState<string[]>([]); const [srcSchemaSel, setSrcSchemaSel] = useState("");
   const [force, setForce] = useState<{ name: string; n: number } | null>(null); const [orderPlan, setOrderPlan] = useState<OrderPlan | null>(null);
   const [copyIdx, setCopyIdx] = useState(false); const [copyDef, setCopyDef] = useState(false); const [copyFk, setCopyFk] = useState(false);
@@ -64,6 +68,8 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
   const [plan, setPlan] = useState<Plan | null>(null); const [confirmed, setConfirmed] = useState(false); const [requestId, setRequestId] = useState("");
   const [done, setDone] = useState<{ insertedRows: number; replayed: boolean; notes?: string[] } | null>(null);
   const [job, setJob] = useState<JobStatus | null>(null);
+  type Verification = { sourceRows: number; targetRows: number; rowsMatch: boolean; allMatch: boolean; notes: string[]; checks: { source: string; target: string; measure: string; sourceValue: string; targetValue: string; match: boolean; note: string }[] };
+  const [verify, setVerify] = useState<Verification | null>(null); const [verifying, setVerifying] = useState(false); const [verifyError, setVerifyError] = useState("");
   const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [notice, setNotice] = useState("");
 
   useEffect(() => { // 분할 단위 기본값: 이 브라우저의 설정 → 서버 기본값 순
@@ -74,22 +80,24 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
 
   const targetTable = mode === "new" ? newName.trim() : dst?.table ?? "";
   const targetDbms = dstV?.connection.dbms ?? "postgresql";
-  const mappings = useMemo(() => Object.entries(mapping).filter(([, to]) => to).map(([from, to]) => ({ source: from, target: to, ...(mode === "new" ? ov[from] : {}) })), [mapping, ov, mode]);
+  const mappings = useMemo(() => Object.entries(mapping).filter(([, to]) => to).map(([from, to]) => ({ source: from, target: to, ...(mode === "new" ? ov[from] : {}), ...(rules[from]?.length ? { steps: rules[from] } : {}) })), [mapping, ov, mode, rules]);
   const duplicated = useMemo(() => { const seen = new Set<string>(); const dup = new Set<string>(); mappings.forEach(m => { const k = m.target.toLowerCase(); if (seen.has(k)) dup.add(k); seen.add(k); }); return dup; }, [mappings]);
-  const total = analysis?.sourceRows ?? srcRows ?? 0;
+  const filtered = where.trim() !== "";
+  const total = analysis?.sourceRows ?? (filtered ? whereRows : srcRows) ?? 0;
   const chunk = Number(chunkText.replace(/\D/g, ""));
   const chunkValid = chunk >= 100 && chunk <= 10000;
   const bulk = total > SYNC_LIMIT;
   const chunks = bulk && chunkValid ? Math.ceil(total / chunk) : 1;
-  const errors = (analysis?.columns.filter(c => c.level === "error").length ?? 0) + duplicated.size;
+  const incompleteRules = Object.entries(rules).filter(([c, st]) => mapping[c] && st.some(x => !stepReady(x))).length;
+  const errors = (analysis?.columns.filter(c => c.level === "error").length ?? 0) + duplicated.size + incompleteRules;
   const warns = analysis?.columns.filter(c => c.level === "warn").length ?? 0;
   const jobActive = job?.state === "queued" || job?.state === "running";
   const working = busy || jobActive;
 
   const body = () => ({ source: srcV!.connection, sourceSchema: src!.schema, sourceTable: src!.table, target: dstV!.connection, targetSchema: mode === "new" ? dstSchema : dst!.schema,
     targetTable, mappings, limit: Math.max(1, total), createTable: mode === "new", preserveKeys,
-    copyIndexes: mode === "new" && copyIdx, copyDefaults: mode === "new" && copyDef, copyForeignKeys: mode === "new" && copyFk, chunkSize: bulk && chunkValid ? chunk : undefined });
-  function resetRun() { setPlan(null); setConfirmed(false); setRequestId(""); setDone(null); setJob(null); setError(""); setNotice(""); }
+    copyIndexes: mode === "new" && copyIdx, copyDefaults: mode === "new" && copyDef, copyForeignKeys: mode === "new" && copyFk, chunkSize: bulk && chunkValid ? chunk : undefined, where: filtered ? where.trim() : undefined });
+  function resetRun() { setVerify(null); setVerifyError(""); setPlan(null); setConfirmed(false); setRequestId(""); setDone(null); setJob(null); setError(""); setNotice(""); }
   async function run(action: () => Promise<void>) {
     setBusy(true); setError(""); setNotice("");
     try { await action(); } catch (reason) { setError(reason instanceof Error ? reason.message : "요청을 처리하지 못했습니다."); } finally { setBusy(false); onHistoryChanged(); }
@@ -97,7 +105,7 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
 
   // ---- 원본 선택
   function onSrcPick(picked: Picked | null) {
-    setSrc(picked); setSrcOk(false); setDstOk(false); setSrcRows(null); setAnalysis(null); setPreview(null); resetRun();
+    setSrc(picked); setRules({}); setOpenRule(""); setWhere(""); setWhereRows(null); setWhereError(""); setSrcOk(false); setDstOk(false); setSrcRows(null); setAnalysis(null); setPreview(null); resetRun();
     if (!picked || !srcV) return;
     request("/connections/count", { connection: srcV.connection, schema: picked.schema, table: picked.table }).then(r => r.json()).then(r => setSrcRows(r.rows)).catch(() => setSrcRows(null));
   }
@@ -105,6 +113,14 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
   function goParent(name: string) {
     setForce({ name, n: Date.now() }); setMode("new"); setNewName(name); setActive("src"); setSrcOk(false); setDstOk(false); resetRun();
     setNotice(`부모 테이블 ${name}을(를) 먼저 이관하세요. '원본 확정'과 '대상 확정'을 누르면 같은 대상으로 이관할 수 있습니다. 끝나면 원래 테이블을 다시 선택하세요.`);
+  }
+  function changeWhere(value: string) { setWhere(value); setWhereRows(null); setWhereError(""); setSrcOk(false); setDstOk(false); resetRun(); }
+  async function checkWhere() {
+    if (!srcV || !src) return;
+    setWhereBusy(true); setWhereError("");
+    try { setWhereRows((await (await request("/connections/count-filtered", { connection: srcV.connection, schema: src.schema, table: src.table, where: where.trim() })).json()).rows); }
+    catch (reason) { setWhereRows(null); setWhereError(reason instanceof Error ? reason.message : "조건을 확인하지 못했습니다."); }
+    finally { setWhereBusy(false); }
   }
   function confirmSource() { setSrcOk(true); setDstOk(false); resetRun(); setActive("dst"); }
   // ---- 대상 선택
@@ -114,7 +130,7 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
   }
   function confirmTarget() {
     if (!src || !dstV) return;
-    setOv({});
+    setOv({}); setRules({}); setOpenRule("");
     const usable = src.columns.filter(c => !UNSUPPORTED.has(c.jdbcType ?? 12));
     if (mode === "new") setMapping(Object.fromEntries(usable.map(c => [c.name, newColumnName(dstV.connection.dbms, c.name)])));
     else if (dst) {
@@ -141,6 +157,15 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
     request("/connections/read", { connection: srcV.connection, schema: src.schema, table: src.table, columns, limit: 200 }).then(r => r.json()).then(setPreview)
       .catch(reason => setPreviewError(reason instanceof Error ? reason.message : "미리보기를 불러오지 못했습니다."));
   }, [srcOk, src, srcV]);
+  async function runVerify() {
+    setVerifying(true); setVerifyError("");
+    try { setVerify(await (await request("/connections/migrate/verify", body())).json()); }
+    catch (reason) { setVerify(null); setVerifyError(reason instanceof Error ? reason.message : "검증하지 못했습니다."); }
+    finally { setVerifying(false); }
+  }
+  useEffect(() => { if (done) void runVerify(); // 이관이 끝나면 자동으로 원본과 대상을 비교한다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [done]);
   // ---- 대용량 작업 진행률
   useEffect(() => {
     if (!job || !jobActive) return;
@@ -209,7 +234,14 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
               {orderPlan.cycles.length > 0 && <div className="alert warning">서로 참조해 순서를 정할 수 없는 테이블: {orderPlan.cycles.join(", ")}. FK를 복제하지 않고 이관한 뒤 DB에서 FK를 추가하세요.</div>}
             </div>}</div></details>}
         {src && <div className="chips"><span className="chip">{srcRows != null ? `총 ${fmt(srcRows)}행` : "행 수 확인 중"}</span><span className="chip">{src.columns.length}개 컬럼</span>{src.columns.some(c => UNSUPPORTED.has(c.jdbcType ?? 12)) && <span className="pill warn">이진 등 이관할 수 없는 컬럼은 자동으로 제외됩니다</span>}</div>}
-        <div className="row"><button type="button" className="btn p" disabled={!srcV || !src || srcRows == null || working} data-tip="원본을 확정하고 대상 선택으로 넘어갑니다." onClick={confirmSource}>원본 확정</button>
+        {src && <div className="split"><div className="sp-h">이관할 행 조건<Help text="원본에서 조건에 맞는 행만 이관합니다. WHERE 없이 조건식만 입력하세요. 예: STATUS = 'A' AND AMT > 100. 비워 두면 전체 행을 이관합니다. 컬럼 이름의 대소문자는 원본 DB 기준이며, PostgreSQL에서 대문자 컬럼은 큰따옴표로 감싸세요. 이관할 컬럼은 컬럼 매핑에서 대상 컬럼을 비워 제외합니다." /></div>
+          <div className="row end"><label className="f" style={{ flex: 1 }}>행 조건(선택)<input aria-label="행 조건" maxLength={1000} disabled={working} placeholder="예: STATUS = 'A' AND AMT > 100" value={where} onChange={e => changeWhere(e.target.value)} /></label>
+            <button type="button" className="btn" disabled={!filtered || whereBusy || working} data-tip="조건에 맞는 행 수를 조회합니다. 데이터는 바꾸지 않습니다." onClick={() => void checkWhere()}>{whereBusy ? "확인 중…" : "조건 확인"}</button></div>
+          {whereError && <div className="alert warning" role="alert">{whereError}</div>}
+          {filtered && whereRows != null && <p className="mapsum" role="status">조건에 맞는 행 {fmt(whereRows)}행 (전체 {srcRows != null ? fmt(srcRows) : "?"}행)</p>}
+          {filtered && whereRows == null && !whereError && <p className="mut">조건을 입력했다면 &apos;조건 확인&apos;으로 행 수를 확인한 뒤 원본을 확정할 수 있습니다.</p>}
+        </div>}
+        <div className="row"><button type="button" className="btn p" disabled={!srcV || !src || srcRows == null || working || (filtered && whereRows == null)} data-tip="원본을 확정하고 대상 선택으로 넘어갑니다." onClick={confirmSource}>원본 확정</button>
           {!srcV && <span className="mut">연결 확인을 먼저 완료하세요</span>}</div>
       </div></div>
 
@@ -233,17 +265,18 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
           <div className="sp-h">분할 이관<Help text="대용량 데이터를 나누어 이관하는 설정입니다. 분할 단위마다 따로 저장되므로 중단되어도 이어서 진행할 수 있습니다. 기본값은 설정 메뉴의 분할 이관 단위입니다." /></div>
           <div className="row end"><label className="f" style={{ width: 200 }}>분할 단위(행)<input aria-label="분할 단위(행)" inputMode="numeric" value={chunkText} disabled={working} onChange={e => { setChunkText(e.target.value); setDstOk(false); }} /></label>
             <div className="chips" role="group" aria-label="분할 단위 빠른 선택">{[1000, 2500, 5000, 10000].map(v => <button type="button" key={v} className="pre" aria-pressed={chunk === v} disabled={working} onClick={() => { setChunkText(String(v)); setDstOk(false); }}>{fmt(v)}</button>)}</div></div>
-          <p className={`mapsum ${chunkValid ? "" : "bad"}`} role="status">{!chunkValid ? "분할 단위는 100~10,000행 사이로 입력하세요" : srcRows == null ? "원본을 선택하면 분할 횟수를 계산합니다" : !bulk ? `총 ${fmt(srcRows)}행은 분할 없이 한 번에 이관합니다` : `총 ${fmt(srcRows)}행 ÷ ${fmt(chunk)}행 = ${chunks}회 분할 (마지막 회 ${fmt(srcRows - (chunks - 1) * chunk)}행)`}</p>
+          <p className={`mapsum ${chunkValid ? "" : "bad"}`} role="status">{!chunkValid ? "분할 단위는 100~10,000행 사이로 입력하세요" : srcRows == null ? "원본을 선택하면 분할 횟수를 계산합니다" : !bulk ? `총 ${fmt(total)}행은 분할 없이 한 번에 이관합니다` : `총 ${fmt(total)}행 ÷ ${fmt(chunk)}행 = ${chunks}회 분할 (마지막 회 ${fmt(total - (chunks - 1) * chunk)}행)`}</p>
         </div>
         <div className="row"><button type="button" className="btn p" disabled={!dstV || !srcOk || working || !chunkValid || (mode === "new" ? !dstSchema || !newName.trim() : !dst)} data-tip="대상을 확정하고 검토 단계로 넘어갑니다." onClick={confirmTarget}>대상 확정</button>
           {!srcOk && <span className="mut">원본을 먼저 확정하세요</span>}</div>
       </div></div>
 
     {active === "map" && srcOk && dstOk && src && <div role="region" className="panel" aria-label="검토"><h2>컬럼 매핑<Help text="원본 컬럼이 어느 대상 컬럼으로 들어갈지 짝지어 주는 설정입니다. 추천값이 미리 입력되어 있습니다." /><span className="hs">원본 컬럼이 들어갈 대상 컬럼을 지정하세요</span></h2>
-      <div className="table-scroll mapping-table"><table><thead><tr><th>원본 컬럼</th><th>대상 컬럼<span className="hs">{mode === "existing" ? "대상 테이블의 전체 컬럼" : "신규 테이블의 컬럼 이름"}</span></th><th>대상 타입{mode === "new" && <span className="hs">신규 생성 시 직접 지정할 수 있습니다</span>}</th><th>상태</th></tr></thead><tbody>
+      <div className="table-scroll mapping-table"><table><thead><tr><th>원본 컬럼</th><th>대상 컬럼<span className="hs">{mode === "existing" ? "대상 테이블의 전체 컬럼" : "신규 테이블의 컬럼 이름"}</span></th><th>대상 타입{mode === "new" && <span className="hs">신규 생성 시 직접 지정할 수 있습니다</span>}</th><th>변환 규칙<span className="hs">값을 바꿔 이관할 때 설정합니다</span></th><th>상태</th></tr></thead><tbody>
         {src.columns.filter(c => !UNSUPPORTED.has(c.jdbcType ?? 12)).map(column => { const row = analysis?.columns.find(c => c.source === column.name); const dup = duplicated.has((mapping[column.name] ?? "").toLowerCase());
           const level: Level | "" = dup ? "error" : row?.level ?? ""; const targetCol = dst?.columns.find(c => c.name === mapping[column.name]);
-          return <tr key={column.name}><td>{column.name}{column.primaryKey && <> <span className="pill" data-tip="기본 키(PK): 행을 구분하는 고유 번호입니다.">PK</span></>}{column.foreignKey && <> <span className="pill" data-tip="외래 키(FK): 다른 테이블의 행을 참조하는 컬럼입니다. 참조되는 테이블을 먼저 이관하세요.">FK</span></>}<small>{typeLabel(column)}</small></td>
+          const ruleSteps = rules[column.name] ?? [];
+          return <Fragment key={column.name}><tr><td>{column.name}{column.primaryKey && <> <span className="pill" data-tip="기본 키(PK): 행을 구분하는 고유 번호입니다.">PK</span></>}{column.foreignKey && <> <span className="pill" data-tip="외래 키(FK): 다른 테이블의 행을 참조하는 컬럼입니다. 참조되는 테이블을 먼저 이관하세요.">FK</span></>}<small>{typeLabel(column)}</small></td>
             <td>{mode === "new" ? <input aria-label={`${column.name} 대상 컬럼`} maxLength={64} disabled={working} placeholder="이관 제외(비움)" value={mapping[column.name] ?? ""} onChange={e => { setMapping(m => ({ ...m, [column.name]: e.target.value })); resetRun(); }} />
               : <select aria-label={`${column.name} 대상 컬럼`} disabled={working} value={mapping[column.name] ?? ""} onChange={e => { setMapping(m => ({ ...m, [column.name]: e.target.value })); resetRun(); }}>
                 <option value="">(이관 제외)</option>{dst?.columns.map(c => <option key={c.name} value={c.name}>{c.name} · {typeLabel(c)}{c.primaryKey ? " [PK]" : ""}{c.foreignKey ? " [FK]" : ""}</option>)}</select>}</td>
@@ -252,7 +285,10 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
                 {(t === "string" || t === "integer" || t === "decimal") && <input type="number" aria-label={`${column.name} 길이 또는 정밀도`} data-tip={t === "string" ? "문자열 최대 길이입니다. 비우면 원본 컬럼 길이를 따릅니다." : "숫자의 전체 자릿수(정밀도)입니다. 비우면 원본을 따릅니다."} min={1} max={t === "string" ? 32767 : 38} disabled={working || !mapping[column.name]} placeholder={sized && column.size ? String(column.size) : "자동"} value={o.size ?? ""} onChange={e => setOverride(column.name, { size: e.target.value === "" ? undefined : Number(e.target.value) })} />}
                 {t === "decimal" && <input type="number" aria-label={`${column.name} 소수 자릿수`} data-tip="소수점 이하 자릿수입니다. 비우면 원본을 따릅니다." min={0} max={38} disabled={working || !mapping[column.name]} placeholder={String(column.scale || 0)} value={o.scale ?? ""} onChange={e => setOverride(column.name, { scale: e.target.value === "" ? undefined : Number(e.target.value) })} />}</div>; })()
               : targetCol ? <>{typeLabel(targetCol)}{targetCol.primaryKey && <> <span className="pill">PK</span></>}{targetCol.foreignKey && <> <span className="pill">FK</span></>}</> : "—"}</td>
-            <td className="wrap">{!mapping[column.name] ? <span className="pill">제외</span> : level ? <><span className={`pill ${levelClass[level]}`}>{dup ? "중복 선택" : levelLabel[level]}</span><small>{dup ? "같은 대상 컬럼이 다른 원본 컬럼에도 지정되어 있습니다" : row?.detail}</small></> : <span className="mut">분석 중</span>}</td></tr>; })}
+            <td className="wrap"><button type="button" className="btn sm" aria-expanded={openRule === column.name} aria-label={`${column.name} 변환 규칙`} disabled={!mapping[column.name]} onClick={() => setOpenRule(openRule === column.name ? "" : column.name)}>{ruleSteps.length ? `규칙 ${ruleSteps.length}개` : "설정"}</button>{ruleSteps.length > 0 && <small>{summarize(ruleSteps)}</small>}</td>
+            <td className="wrap">{!mapping[column.name] ? <span className="pill">제외</span> : level ? <><span className={`pill ${levelClass[level]}`}>{dup ? "중복 선택" : levelLabel[level]}</span><small>{dup ? "같은 대상 컬럼이 다른 원본 컬럼에도 지정되어 있습니다" : row?.detail}</small></> : <span className="mut">분석 중</span>}</td></tr>
+            {openRule === column.name && <tr><td colSpan={5}><TransformEditor column={column.name} columns={src.columns.filter(c => !UNSUPPORTED.has(c.jdbcType ?? 12)).map(c => c.name)} steps={ruleSteps} disabled={working || !mapping[column.name]}
+              onChange={next => { setRules(r => ({ ...r, [column.name]: next })); resetRun(); }} /></td></tr>}</Fragment>; })}
       </tbody></table></div>
       <p className="mapsum" role="status" style={{ marginTop: 10 }}>매핑 {mappings.length}건 · 경고 {warns}건 · 오류 {errors}건{errors ? " — 오류를 해결해야 이관할 수 있습니다" : ""}</p>
       {analysisError && <div role="alert" className="alert error" style={{ marginTop: 10 }}>{analysisError}</div>}
@@ -296,6 +332,16 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
           {job && <><div className="prog"><i style={{ width: `${job.totalRows ? Math.round(job.doneRows / job.totalRows * 100) : 0}%` }} /></div>
             <p>{job.state === "succeeded" ? "완료" : job.state === "failed" ? "실패" : job.state === "cancelled" ? "중지됨" : job.state === "queued" ? "대기 중" : "진행 중"} · {fmt(job.doneRows)} / {fmt(job.totalRows)}행 · {job.doneChunks} / {job.totalChunks}회 완료{job.replayedChunks > 0 ? ` (이미 완료되어 건너뜀 ${job.replayedChunks}회)` : ""}</p></>}
           {done?.notes && done.notes.length > 0 && <div className="alert success"><ul>{done.notes.map(n => <li key={n}>{n}</li>)}</ul></div>}</div>}
+        {done && <div className="grid" role="region" aria-label="이관 결과 검증"><h2 style={{ margin: 0, fontSize: 15 }}>이관 결과 검증<Help text="이관이 끝난 뒤 원본과 대상의 행 수, 값이 있는 행 수, 숫자 합계·최소·최대, 문자열 길이 합계, 날짜 최소·최대를 비교합니다. 읽기만 하며 데이터를 바꾸지 않습니다." /></h2>
+          <div className="row"><button type="button" className="btn" disabled={verifying} onClick={() => void runVerify()}>{verifying ? "검증 중…" : "다시 검증"}</button>
+            {verify && <span className={`pill ${verify.allMatch ? "ok" : "bad"}`}>{verify.allMatch ? "원본과 대상이 일치합니다" : "불일치가 있습니다"}</span>}</div>
+          {verifyError && <div className="alert warning">{verifyError}</div>}
+          {verify && <><p>원본 {fmt(verify.sourceRows)}행 · 대상 {fmt(verify.targetRows)}행 {verify.rowsMatch ? "(일치)" : "(불일치)"}</p>
+            {verify.notes.length > 0 && <div className="alert warning" role="status"><ul>{verify.notes.map(n => <li key={n}>{n}</li>)}</ul></div>}
+            <div><table className="fit"><thead><tr><th>컬럼</th><th>비교 항목</th><th>원본</th><th>대상</th><th>결과</th></tr></thead><tbody>
+              {verify.checks.map((c, i) => <tr key={i}><td>{c.source}{c.source !== c.target ? ` → ${c.target}` : ""}</td><td>{c.measure}</td><td>{c.sourceValue}</td><td>{c.targetValue}</td><td>{c.match ? "일치" : `불일치${c.note ? ` · ${c.note}` : ""}`}</td></tr>)}</tbody></table></div></>}
+        </div>}
+        {plan && !done && <ScheduleForm kind="single" build={() => body()} canSchedule={!!srcV?.connection.savedId && !!dstV?.connection.savedId} defaultName={`${src?.table ?? ""} → ${targetTable}`} disabled={working || startBlocked} />}
       </div></div>}
   </div>;
 }

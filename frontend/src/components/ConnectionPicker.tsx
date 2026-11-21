@@ -67,7 +67,7 @@ export default function ConnectionPicker({ role, server, saved, onSavedChanged, 
           const saveName = (name.trim() || current?.name || connectionName(conn)).slice(0, 60);
           const result = await saveConnection(saveName, { ...conn, password: keepOld ? "" : conn.password, savedId: undefined }, savePassword && canSavePassword);
           label = result.name; setSelected(result.id); setName(result.name); setSavePassword(result.passwordSaved);
-          if (result.passwordSaved) verified = { ...conn, password: "", savedId: result.id };
+          if (result.passwordSaved) { verified = { ...conn, password: "", savedId: result.id }; setConn(c => ({ ...c, password: "" })); } // 저장한 뒤에는 서버의 저장된 비밀번호를 쓰므로 입력란을 비운다(다시 확인해도 savedId로 연결)
           onSavedChanged();
         }
       }

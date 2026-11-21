@@ -18,20 +18,26 @@ import java.util.function.Function;
 public class MigrationJobs {
     private static final int KEEP = 50;
     public record Status(String id, String state, long totalRows, long doneRows, int totalChunks, int doneChunks, int replayedChunks,
-                         String errorCode, String message, String startedAt, String finishedAt, List<String> notes) {}
+                         String errorCode, String message, String startedAt, String finishedAt, List<String> notes, List<BatchMigration.Item> items) {
+        public Status(String id, String state, long totalRows, long doneRows, int totalChunks, int doneChunks, int replayedChunks,
+                      String errorCode, String message, String startedAt, String finishedAt, List<String> notes) {
+            this(id, state, totalRows, doneRows, totalChunks, doneChunks, replayedChunks, errorCode, message, startedAt, finishedAt, notes, null);
+        }
+    }
 
     /** 목록 한 줄: 상태 + 화면 표시용 이름 + 재개 가능 여부(실패·중지·중단) + 재개할 때 비밀번호가 필요한 쪽. */
     public record Info(Status status, String source, String target, boolean resumable, boolean sourceNeedsPassword, boolean targetNeedsPassword) {}
 
-    private final class Job implements MigrationService.Progress {
+    private final class Job implements BatchMigration.BatchProgress {
         final String id; volatile boolean cancel; String state = "queued"; long totalRows, doneRows; int totalChunks, doneChunks, replayedChunks;
-        String errorCode, message, startedAt = Instant.now().toString(), finishedAt; List<String> notes = List.of();
+        String errorCode, message, startedAt = Instant.now().toString(), finishedAt; List<String> notes = List.of(); List<BatchMigration.Item> items;
         JsonNode definition; String sourceLabel = "", targetLabel = "";
         Job(String id) { this.id = id; }
         @Override public synchronized void total(int chunks, long rows) { state = "running"; totalChunks = chunks; totalRows = rows; persist(this); }
         @Override public synchronized void chunk(int done, long rows, int replayed) { doneChunks = done; doneRows = rows; replayedChunks = replayed; persist(this); }
+        @Override public synchronized void items(List<BatchMigration.Item> next) { items = List.copyOf(next); persist(this); }
         @Override public boolean cancelled() { return cancel; }
-        synchronized Status snapshot() { return new Status(id, state, totalRows, doneRows, totalChunks, doneChunks, replayedChunks, errorCode, message, startedAt, finishedAt, notes); }
+        synchronized Status snapshot() { return new Status(id, state, totalRows, doneRows, totalChunks, doneChunks, replayedChunks, errorCode, message, startedAt, finishedAt, notes, items); }
         synchronized boolean active() { return state.equals("queued") || state.equals("running"); }
     }
 
@@ -50,7 +56,7 @@ public class MigrationJobs {
             var s = st.status(); Job job = new Job(st.id());
             job.state = s.state(); job.totalRows = s.totalRows(); job.doneRows = s.doneRows(); job.totalChunks = s.totalChunks(); job.doneChunks = s.doneChunks();
             job.replayedChunks = s.replayedChunks(); job.errorCode = s.errorCode(); job.message = s.message(); job.startedAt = s.startedAt(); job.finishedAt = s.finishedAt();
-            job.notes = s.notes() == null ? List.of() : s.notes(); job.definition = st.definition(); job.sourceLabel = st.source() == null ? "" : st.source(); job.targetLabel = st.target() == null ? "" : st.target();
+            job.notes = s.notes() == null ? List.of() : s.notes(); job.items = s.items(); job.definition = st.definition(); job.sourceLabel = st.source() == null ? "" : st.source(); job.targetLabel = st.target() == null ? "" : st.target();
             if (job.active()) {
                 job.state = "failed"; job.errorCode = "SERVER_RESTARTED"; job.finishedAt = Instant.now().toString();
                 job.message = "서버가 다시 시작되어 이관이 중단되었습니다. 재개하면 완료된 분량은 건너뛰고 이어서 진행합니다.";
@@ -100,6 +106,8 @@ public class MigrationJobs {
         return result;
     }
     private static boolean needsPassword(JsonNode def, String side) { JsonNode id = def.path(side).path("savedId"); return id.isMissingNode() || id.isNull() || id.asText().isBlank(); }
+    /** 이전 실행의 테이블별 결과(일괄 이관 재개용). 없으면 빈 목록. */
+    public List<BatchMigration.Item> items(String id) { Job job = jobs.get(id); if (job == null) return List.of(); synchronized (job) { return job.items == null ? List.of() : job.items; } }
     /** 재개용 정의(비밀번호 제외). 재개할 수 없으면 null. */
     public JsonNode definition(String id) { Job job = jobs.get(id); return job == null ? null : job.definition; }
     public Status get(String id) {

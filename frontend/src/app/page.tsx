@@ -1,16 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import BatchPage from "@/components/BatchPage";
 import FilePage from "@/components/FilePage";
 import HistoryPage from "@/components/HistoryPage";
 import MigratePage from "@/components/MigratePage";
+import SchedulePage from "@/components/SchedulePage";
 import SettingsPage from "@/components/SettingsPage";
 import { Logo, ThemeToggle, TipLayer } from "@/components/ui";
 import { useSavedConnections, useServerInfo } from "@/lib/connections";
 
 const pages = [
   { id: "migrate", label: "DB 이관", tip: "원본 DB의 데이터를 대상 DB로 이관합니다." },
+  { id: "batch", label: "일괄 이관", tip: "여러 테이블 또는 스키마 전체를 한 번에 이관합니다. 외래 키 순서는 자동으로 정해집니다." },
   { id: "file", label: "파일 변환", tip: "CSV, Excel, PDF, 이미지를 표로 변환해 SQL, Excel, CSV로 출력하거나 DB에 적재합니다." },
+  { id: "schedule", label: "스케줄", tip: "저장해 둔 이관 설정을 정해진 시각이나 간격으로 자동 실행합니다." },
   { id: "history", label: "작업 이력", tip: "수행한 작업을 조회합니다." },
   { id: "settings", label: "설정", tip: "서버 기능 상태, 분할 이관 단위, 저장된 연결을 관리합니다." },
 ] as const;
@@ -43,7 +47,9 @@ export default function Home() {
     <main className="page gut">
       {/* 화면을 바꿔도 입력 중인 내용이 사라지지 않도록 모두 마운트해 두고 숨긴다. */}
       <div hidden={page !== "migrate"}><MigratePage server={info} saved={saved} reloadSaved={reloadSaved} onHistoryChanged={onHistoryChanged} /></div>
+      <div hidden={page !== "batch"}><BatchPage server={info} saved={saved} reloadSaved={reloadSaved} onHistoryChanged={onHistoryChanged} /></div>
       <div hidden={page !== "file"}><FilePage server={info} saved={saved} reloadSaved={reloadSaved} onHistoryChanged={onHistoryChanged} /></div>
+      <div hidden={page !== "schedule"}><SchedulePage visible={page === "schedule"} /></div>
       <div hidden={page !== "history"}><HistoryPage refreshKey={historyKey} /></div>
       <div hidden={page !== "settings"}><SettingsPage server={info} error={error} saved={saved} reloadSaved={reloadSaved} /></div>
     </main>

@@ -28,20 +28,27 @@ public class JdbcReader {
     public record Counted(Table table, long totalRows) {}
     /** 추출과 전체 행 수 조회를 한 연결에서 수행한다(DB→DB가 일부만 이전하는 일을 막기 위함). */
     public Counted readCounted(Credentials credentials, String schema, String table, List<String> columns, int limit) {
+        return readCounted(credentials, schema, table, columns, limit, null);
+    }
+    /** where: 행 조건(없으면 null). RowFilter 규칙을 통과한 조건만 쓴다. */
+    public Counted readCounted(Credentials credentials, String schema, String table, List<String> columns, int limit, String where) {
         return explorer.withConnection(credentials, true, connection -> {
-            Table extracted = extract(connection, credentials.dbms(), schema, table, columns, limit);
-            return new Counted(extracted, countRows(connection, credentials.dbms(), schema, table));
+            Table extracted = extract(connection, credentials.dbms(), schema, table, columns, limit, -1, null, where);
+            return new Counted(extracted, countRows(connection, credentials.dbms(), schema, table, where));
         });
     }
 
     /** 전체 행 수(대용량 이전의 청크 계산용). */
-    public long count(Credentials credentials, String schema, String table) {
-        return explorer.withConnection(credentials, true, connection -> countRows(connection, credentials.dbms(), schema, table));
+    public long count(Credentials credentials, String schema, String table) { return count(credentials, schema, table, null); }
+    public long count(Credentials credentials, String schema, String table, String where) {
+        return explorer.withConnection(credentials, true, connection -> countRows(connection, credentials.dbms(), schema, table, where));
     }
-    private long countRows(Connection connection, Dbms dbms, String schema, String table) throws SQLException {
+    private long countRows(Connection connection, Dbms dbms, String schema, String table, String where) throws SQLException {
+        String filter = RowFilter.clean(where);
         try (Statement statement = connection.createStatement()) {
             statement.setQueryTimeout(QUERY_TIMEOUT_SECONDS);
-            try (ResultSet rs = statement.executeQuery("SELECT COUNT(*) FROM " + quote(dbms, schema) + "." + quote(dbms, table))) { rs.next(); return rs.getLong(1); }
+            try (ResultSet rs = statement.executeQuery("SELECT COUNT(*) FROM " + quote(dbms, schema) + "." + quote(dbms, table) + (filter == null ? "" : " WHERE " + filter))) { rs.next(); return rs.getLong(1); }
+            catch (SQLException e) { if (filter == null) throw e; throw filterFailure(e); }
         }
     }
     /**
@@ -49,8 +56,11 @@ public class JdbcReader {
      * 같은 행을 돌려주므로 청크 영수증으로 이어서 실행(재개)할 수 있다. OFFSET 방식이라 매우 큰 테이블에서는 뒤쪽 페이지가 느려진다.
      */
     public Table readPage(Credentials credentials, String schema, String table, List<String> columns, long offset, int size) {
+        return readPage(credentials, schema, table, columns, offset, size, null);
+    }
+    public Table readPage(Credentials credentials, String schema, String table, List<String> columns, long offset, int size, String where) {
         if (offset < 0) throw new IllegalArgumentException("offset은 0 이상이어야 합니다.");
-        return explorer.withConnection(credentials, true, connection -> extract(connection, credentials.dbms(), schema, table, columns, size, offset));
+        return explorer.withConnection(credentials, true, connection -> extract(connection, credentials.dbms(), schema, table, columns, size, offset, null, where));
     }
 
     /** 키 기반(keyset) 페이지 커서. after=이전 페이지 마지막 행의 기본 키 값(null이면 처음부터), last=이번 페이지 마지막 행의 기본 키 값. */
@@ -67,7 +77,10 @@ public class JdbcReader {
      * 기본 키가 없으면 IllegalArgumentException. 읽은 뒤 keyset.last()가 다음 호출의 커서가 된다.
      */
     public Table readKeyPage(Credentials credentials, String schema, String table, List<String> columns, Keyset keyset, int size) {
-        return explorer.withConnection(credentials, true, connection -> extract(connection, credentials.dbms(), schema, table, columns, size, -1, keyset));
+        return readKeyPage(credentials, schema, table, columns, keyset, size, null);
+    }
+    public Table readKeyPage(Credentials credentials, String schema, String table, List<String> columns, Keyset keyset, int size, String where) {
+        return explorer.withConnection(credentials, true, connection -> extract(connection, credentials.dbms(), schema, table, columns, size, -1, keyset, where));
     }
     private List<String> primaryKey(Connection connection, Dbms dbms, String schema, String table) throws SQLException {
         boolean catalogBased = dbms == Dbms.mysql || dbms == Dbms.mariadb;
@@ -87,6 +100,10 @@ public class JdbcReader {
         return extract(connection, dbms, schema, table, selected, limit, offset, null);
     }
     Table extract(Connection connection, Dbms dbms, String schema, String table, List<String> selected, int limit, long offset, Keyset keyset) throws SQLException {
+        return extract(connection, dbms, schema, table, selected, limit, offset, keyset, null);
+    }
+    Table extract(Connection connection, Dbms dbms, String schema, String table, List<String> selected, int limit, long offset, Keyset keyset, String where) throws SQLException {
+        String filter = RowFilter.clean(where);
         if (limit < 1 || limit > MAX_ROWS) throw new IllegalArgumentException("조회 행 수는 1~" + MAX_ROWS + " 사이여야 합니다.");
         require(schema); require(table);
         boolean catalogBased = dbms == Dbms.mysql || dbms == Dbms.mariadb;
@@ -132,6 +149,7 @@ public class JdbcReader {
         String sql = "SELECT " + String.join(", ", selectList) + " FROM "
             + quote(dbms, schema) + "." + quote(dbms, table);
         List<Object> binds = new ArrayList<>();
+        String keyCondition = null;
         if (keyset != null) {
             if (keyset.after != null) { // (k1,k2) > (a,b) 를 OR 전개: k1>a OR (k1=a AND k2>b) — 튜플 비교를 못 하는 Oracle도 동작
                 List<String> ors = new ArrayList<>();
@@ -141,24 +159,29 @@ public class JdbcReader {
                     and.add(quote(dbms, keyColumns.get(i)) + " > ?"); binds.add(keyset.after.get(i));
                     ors.add("(" + String.join(" AND ", and) + ")");
                 }
-                sql += " WHERE " + String.join(" OR ", ors);
+                keyCondition = String.join(" OR ", ors);
             }
+            sql += whereClause(filter, keyCondition);
             sql += " ORDER BY " + String.join(", ", keyColumns.stream().map(n -> quote(dbms, n)).toList());
             sql += dbms == Dbms.oracle ? " FETCH FIRST " + limit + " ROWS ONLY" : " LIMIT " + limit;
         } else if (offset >= 0) {
+            sql += whereClause(filter, null);
             List<String> order = new ArrayList<>(); // 기본 키(KEY_SEQ 순) → 없으면 선택한 컬럼 전체
             List<String> keys = primaryKey(connection, dbms, schema, table);
             (keys.isEmpty() ? names : keys).forEach(name -> order.add(quote(dbms, name)));
             sql += " ORDER BY " + String.join(", ", order);
             sql += dbms == Dbms.oracle ? " OFFSET " + offset + " ROWS FETCH NEXT " + limit + " ROWS ONLY" : " LIMIT " + limit + " OFFSET " + offset;
-        } else if (dbms == Dbms.oracle) sql += " FETCH FIRST " + limit + " ROWS ONLY";
+        } else {
+            sql += whereClause(filter, null);
+            if (dbms == Dbms.oracle) sql += " FETCH FIRST " + limit + " ROWS ONLY";
+        }
         List<Row> rows = new ArrayList<>();
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             for (int i = 0; i < binds.size(); i++) statement.setObject(i + 1, binds.get(i));
             statement.setFetchSize(FETCH_SIZE);
             statement.setMaxRows(limit);
             statement.setQueryTimeout(QUERY_TIMEOUT_SECONDS);
-            try (ResultSet rs = statement.executeQuery()) {
+            try (ResultSet rs = runQuery(statement, filter)) {
                 while (rs.next() && rows.size() < limit) {
                     Map<String, Cell> cells = new LinkedHashMap<>();
                     for (int i = 0; i < tableColumns.size(); i++) {
@@ -178,6 +201,20 @@ public class JdbcReader {
             new Source(schema + "." + table, "database", "jdbc"), tableColumns, rows);
     }
 
+    private static ResultSet runQuery(PreparedStatement statement, String filter) throws SQLException {
+        try { return statement.executeQuery(); } catch (SQLException e) { if (filter == null) throw e; throw filterFailure(e); }
+    }
+    /** 행 조건이 원인일 때는 연결 오류로 오해하지 않도록 DB가 알려준 이유를 그대로 보여준다. */
+    private static IllegalArgumentException filterFailure(SQLException e) {
+        String reason = e.getMessage() == null ? "" : e.getMessage().lines().findFirst().orElse("");
+        return new IllegalArgumentException("행 조건을 적용하지 못했습니다. 컬럼 이름의 대소문자와 값의 형식을 확인해주세요. (" + reason + ")");
+    }
+    private static String whereClause(String filter, String keyCondition) {
+        List<String> parts = new ArrayList<>();
+        if (filter != null) parts.add("(" + filter + ")");
+        if (keyCondition != null) parts.add("(" + keyCondition + ")");
+        return parts.isEmpty() ? "" : " WHERE " + String.join(" AND ", parts);
+    }
     static String text(ResultSet rs, int index, DataType type) throws SQLException {
         return switch (type) {
             case date -> { var v = rs.getDate(index); yield v == null ? null : v.toLocalDate().toString(); }

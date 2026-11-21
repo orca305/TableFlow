@@ -138,3 +138,44 @@ npx playwright test tests/migration.spec.ts tests/db-to-file.spec.ts    # 기대
 1. 공개 배포(Java 호스팅 선정, HTTPS, 접근 경계) — 아직 하지 않았다. 공개 데모는 파일 변환만 노출하고 DB 기능은 끄는 것을 권한다.
 2. 외부 OCR 공급자 실제 호출 검증(키 필요), 원격 CI에 실서버 DB 컨테이너 추가.
 3. 순환 FK 자동 처리(지금은 안내만), 여러 테이블을 한 번에 이관하는 일괄 실행(지금은 테이블 단위로 순서에 따라 하나씩).
+
+## 8. 2026-11-21 ETL 확장 1단계: 이관 후 검증
+
+- `MigrationVerifier` + `POST /connections/migrate/verify`: 이관 완료 후 화면에서 자동 실행되고 "다시 검증" 버튼이 있다. 4개 DB 조합 실서버 통합 테스트(일치/값 변경/행 삭제)와 Playwright(3행, 12,500행)로 확인했다.
+- 남은 단계: 2) 행 조건(WHERE)·일부 컬럼 선택, 3) 컬럼 값 변환 규칙, 4) 여러 테이블·스키마 통째 이관, 5) 스케줄링. 행 조건을 넣으면 `verify`의 `where` 인자(원본에만 적용)를 연결해야 한다.
+
+## 9. 2026-11-21 ETL 확장 2단계: 행 조건과 컬럼 선택
+
+- 행 조건(WHERE): `RowFilter`(검사) → `JdbcReader`(count/readCounted/readPage/readKeyPage/extract에 where) → `MigrationService.Extras.where` → `MigrationVerifier`(원본에만 적용). 화면은 원본 선택의 "이관할 행 조건"과 "조건 확인"이며, 조건을 입력하면 확인하기 전에는 원본을 확정할 수 없다.
+- 컬럼 선택은 기존 컬럼 매핑에서 대상 컬럼을 비워 제외하는 방식이다. 원본 데이터 미리보기(샘플 200행)는 조건을 적용하지 않는다.
+- 검증: 단위 테스트 `RowFilterTests`, 4개 DB 조합 실서버 `MigrationRowFilterIntegrationTests`(점검·분석·소량·분할·검증·거부), Playwright 행 조건 시나리오. 백엔드 전체 123개 통과(4개 건너뜀).
+- Playwright 이관 스펙은 전체 실행 시 매번 서로 다른 1개가 실패했다가 단독 재실행에서는 모두 통과했다(PC 메모리 부족에 따른 간헐 실패로 보이나 확정하지 못했다).
+- 다음: 3) 컬럼 값 변환 규칙, 4) 여러 테이블·스키마 통째 이관, 5) 스케줄링.
+
+## 10. 2026-11-21 ETL 확장 3단계: 컬럼 값 변환 규칙
+
+- `ValueTransform`(규칙 엔진·계산기) + `Mapping.steps` → `MigrationService.layout/materialize`에서 청크마다 적용한다. SQL을 만들지 않고 서버에서 문자열로 계산하므로 주입 위험이 없다. 계산식은 사칙연산·괄호·{컬럼}만 지원한다(함수 없음). 빈 값이 끼면 결과도 빈 값.
+- 규칙이 참조하는 컬럼은 `readColumns`가 매핑 원본 컬럼 뒤에 덧붙여 읽고, `materialize`가 결과 표에서 뺀다(CELL_KEYS 검증 때문에 필수).
+- 한계: 변환 컬럼은 `MigrationVerifier` 값 비교에서 제외한다. 신규 테이블의 기본 타입은 문자열(계산식은 소수 20,4)이며 길이·정밀도는 대상 타입 지정으로 바꾼다. 날짜 변환·정규식·조건부(CASE) 규칙은 아직 없다.
+- 화면: 컬럼 매핑의 "변환 규칙" 열 → `TransformEditor`(미완성 규칙이 있으면 이관 차단).
+- 검증: `ValueTransformTests`(단위 6), 4개 DB 조합 실서버 `MigrationTransformIntegrationTests`(신규/기존 테이블, 소량/분할, 검증 제외, 오류 거부), Playwright 변환 규칙 시나리오.
+- 다음: 4) 여러 테이블·스키마 통째 이관, 5) 스케줄링.
+
+## 11. 2026-11-21 ETL 확장 4단계: 일괄 이관(여러 테이블·스키마)
+
+- `BatchMigration`(plan/run) + `/migrate/batch[/check]` + 화면 "일괄 이관" 메뉴(`BatchPage`). 기존 `MigrationJobs`에 얹었다: 테이블 수를 `totalChunks`, 누적 행을 `doneRows`로 쓰고 테이블별 상태는 `Status.items`(JobStore에도 저장)에 둔다. 작업 이력의 재개 버튼이 그대로 동작한다(정의에 `tables`가 있으면 일괄 재개로 분기).
+- 순서: `MigrationService.order`(FK 부모 먼저) → 같은 단계 안은 이름순, 순환 참조 테이블은 맨 뒤. FK 복제를 켜면 선택 범위 안의 부모가 먼저 만들어져 자식에 FK가 붙는다. 범위 밖 부모를 가진 FK는 기존 규칙대로 건너뛴다.
+- 대상은 항상 원본 구조로 새로 생성한다(이름은 DBMS 관례로 변환, 이미 있으면 건너뜀/추가 적재 선택). 행이 0인 원본은 `runBulk`가 구조만 만든다(이전에는 "이관할 데이터가 없습니다" 오류).
+- 재개: 테이블별 요청 ID는 `UUID(batchId:table)`에서 결정적으로 만든다. 완료·건너뜀 테이블은 읽지도 않고 넘어가며, 실패·중단 테이블은 이미 만들어진 상태여도 이어서 적재한다(이때는 인덱스·FK DDL이 다시 실행되지 않는 한계가 있다).
+- 한계: 테이블별 컬럼 매핑·변환 규칙·행 조건은 지정할 수 없다(전체 컬럼 자동 매핑). 사전 점검은 테이블마다 분석을 돌리므로 수백 개에서는 느릴 수 있다. 일괄 이관 후 건수 검증은 화면에서 제공하지 않는다(단건 검증 API만 있음).
+- 검증: 4개 DB 조합 실서버 `BatchMigrationIntegrationTests`(순서, 빈 테이블, FK 복제, 건너뜀, 실패 후 재개), Playwright `batch.spec.ts`.
+- 다음: 5) 스케줄링.
+
+## 12. 2026-11-21 ETL 확장 5단계: 스케줄링(반복 실행)
+
+- `ScheduleStore`(data/schedules.json, git 제외) + `ScheduleService`(15초마다 점검하는 단일 스레드) + `ScheduleController`. 화면: 이관/일괄 이관 실행 패널의 "스케줄로 등록"(`ScheduleForm`)과 "스케줄" 메뉴(`SchedulePage`: 지금 실행·중지/사용·삭제, 마지막 결과).
+- 정의는 요청 본문(비밀번호 제거, savedId만)을 보관하고, 실행할 때 `forRun`으로 새 요청 ID·동의 완료·행 수 상한 최대로 복사해 기존 `submitJob/submitBatch`를 호출한다 → 작업 이력·진행률·재개와 같은 경로. 서버가 꺼져 있던 동안 지난 회차는 켜지면 한 번 실행된다.
+- 반복 적재가 중복·키 충돌을 만들지 않도록 `refresh=replace`(실행 전 대상 행 삭제, 일괄은 자식부터)를 권장 기본값으로 둔다. `append`는 키가 겹치면 실패한다.
+- `ConnectionPicker`: 연결을 새로 저장하면 입력란의 비밀번호를 비우고 savedId로 연결한다(이전에는 저장 직후 자동 재확인이 비밀번호 방식으로 바뀌어 스케줄에 쓸 수 없었다).
+- 한계: 서버 프로세스가 켜져 있는 동안에만 실행(OS 스케줄러 아님), 시간대는 서버 기준, 증분(변경분만) 이관은 없다(행 조건으로 범위를 좁힐 수 있으나 replace는 대상 전체를 비운다). 실행 결과 알림(메일 등)은 없다.
+- 검증: `ScheduleIntegrationTests`(등록 규칙, 시각 경과 시 실행, 전체 교체, 일괄 스케줄, 중지; MySQL→MariaDB 실서버), Playwright `schedule.spec.ts`.

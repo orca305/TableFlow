@@ -20,3 +20,5 @@ test-results/
 **/data/connections.key
 **/data/jobs.json
 **/data/jobs.json.tmp
+**/data/schedules.json
+**/data/schedules.json.tmp

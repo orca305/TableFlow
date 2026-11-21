@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { confirmExistingTarget, confirmSource, connectTarget, historyRows, oracle, openHistory, pg, receipts, runPanel } from "./helpers";
+import { confirmExistingTarget, connect, ORACLE, confirmSource, connectTarget, historyRows, oracle, openHistory, pg, receipts, runPanel } from "./helpers";
 
 // 실제 Oracle/PostgreSQL 테스트 컨테이너가 필요합니다(infra/jdbc/compose.yml, --profile oracle).
 // 백엔드를 TABLEFLOW_JDBC_ENABLED=true TABLEFLOW_JDBC_LOAD_ENABLED=true 로 실행하고
@@ -45,6 +45,9 @@ test("real browser: Oracle → PostgreSQL 이관 with auto/manual mapping, pre-c
   await run.getByRole("checkbox", { name: /실제 DB INSERT에 동의/ }).check();
   await start.click();
   await expect(page.getByText("이관 완료: 3행", { exact: true })).toBeVisible();
+  const verification = run.getByRole("region", { name: "이관 결과 검증" });
+  await expect(verification).toContainText("원본과 대상이 일치합니다", { timeout: 30_000 });
+  await expect(verification).toContainText("원본 3행 · 대상 3행");
   expect(pg("SELECT count(*) FROM tf_ui_dst;").trim()).toBe("3");
   expect(pg("SELECT emp_name||'|'||pay||'|'||hiredate FROM tf_ui_dst WHERE empno='001';").trim()).toBe("Kim O'Brien|3500000.50|2026-01-15");
   await expect(start).toBeDisabled(); // 같은 화면에서 이중 실행 방지
@@ -164,6 +167,7 @@ CREATE TABLE tf_ui_big (id integer PRIMARY KEY, name varchar(30), amt numeric(12
     await run.getByRole("button", { name: "이관 시작" }).click();
     await expect(run.getByRole("status", { name: "이관 진행 현황" })).toBeVisible();
     await expect(page.getByText("이관 완료: 12,500행", { exact: true })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole("region", { name: "이관 결과 검증" })).toContainText("원본과 대상이 일치합니다", { timeout: 30_000 });
     await expect(run.getByRole("status", { name: "이관 진행 현황" }).getByText(/완료 · 12[,.]?500 \/ 12[,.]?500행 · 3 \/ 3회 완료/)).toBeVisible();
     expect(pg("SELECT count(*)||'|'||count(DISTINCT id)||'|'||sum(id)||'|'||max(amt) FROM tf_ui_big;").trim()).toBe("12500|12500|78131250|12500.25");
     const history = await openHistory(page);
@@ -368,4 +372,81 @@ COMMIT;`);
     try { oracle(`DROP TABLE TF_O_C;\nDROP TABLE TF_O_P;`); } catch {}
     try { pg(`DROP TABLE IF EXISTS tf_o_c; DROP TABLE IF EXISTS tf_o_p; DROP TABLE IF EXISTS tableflow_load_receipts;`); } catch {}
   }
+});
+
+test("real browser: 행 조건과 컬럼 제외 — 조건을 확인해야 원본을 확정할 수 있고, 조건에 맞는 행만 이관·검증된다", async ({ page }) => {
+  pg(`DROP TABLE IF EXISTS tf_ui_flt; DROP TABLE IF EXISTS tableflow_load_receipts;`);
+  try {
+    await page.goto("/");
+    const src = page.getByRole("region", { name: "원본 선택" });
+    await connect(src, "원본", ORACLE);
+    await src.getByLabel("원본 스키마", { exact: true }).selectOption("TABLEFLOW");
+    await src.getByLabel("원본 테이블", { exact: true }).selectOption("TF_UI_SRC");
+    const confirm = src.getByRole("button", { name: "원본 확정", exact: true });
+    await src.getByLabel("행 조건", { exact: true }).fill("SALARY > 3600000");
+    await expect(confirm).toBeDisabled(); // 조건을 확인하기 전에는 확정할 수 없다
+    await src.getByRole("button", { name: "조건 확인", exact: true }).click();
+    await expect(src.getByText("조건에 맞는 행 2행 (전체 3행)")).toBeVisible();
+    await src.getByLabel("행 조건", { exact: true }).fill("SALARY > 3600000; DROP TABLE X");
+    await src.getByRole("button", { name: "조건 확인", exact: true }).click();
+    await expect(src.getByRole("alert")).toContainText("세미콜론");
+    await src.getByLabel("행 조건", { exact: true }).fill("SALARY > 3600000");
+    await src.getByRole("button", { name: "조건 확인", exact: true }).click();
+    await expect(src.getByText("조건에 맞는 행 2행 (전체 3행)")).toBeVisible();
+    await confirm.click();
+    const dst = await connectTarget(page);
+    await dst.getByLabel("신규 테이블 이름").fill("tf_ui_flt");
+    await dst.getByRole("button", { name: "대상 확정", exact: true }).click();
+    const review = page.getByRole("region", { name: "검토" });
+    await review.getByLabel("HIRE_DATE 대상 컬럼", { exact: true }).fill(""); // 일부 컬럼만 이관
+    const run = runPanel(page);
+    await run.getByRole("button", { name: "사전 점검" }).click();
+    await expect(run.getByText(/원본 2행 중 2행을 이관합니다/)).toBeVisible();
+    await run.getByRole("checkbox", { name: /DB INSERT에 동의/ }).check();
+    await run.getByRole("button", { name: "이관 시작" }).click();
+    await expect(page.getByText("이관 완료: 2행", { exact: true })).toBeVisible();
+    await expect(run.getByRole("region", { name: "이관 결과 검증" })).toContainText("원본과 대상이 일치합니다", { timeout: 30_000 });
+    expect(pg("SELECT count(*) FROM tf_ui_flt;").trim()).toBe("2");
+    expect(pg("SELECT string_agg(emp_no, ',' ORDER BY emp_no) FROM tf_ui_flt;").trim()).toBe("002,003");
+    expect(pg("SELECT count(*) FROM information_schema.columns WHERE table_name='tf_ui_flt' AND column_name='hire_date';").trim()).toBe("0");
+  } finally { try { pg(`DROP TABLE IF EXISTS tf_ui_flt; DROP TABLE IF EXISTS tableflow_load_receipts;`); } catch {} }
+});
+
+test("real browser: 변환 규칙 — 대문자 변환 후 합치기와 계산식을 설정하면 변환된 값이 이관된다", async ({ page }) => {
+  pg(`DROP TABLE IF EXISTS tf_ui_tf; DROP TABLE IF EXISTS tableflow_load_receipts;`);
+  try {
+    await confirmSource(page, "TF_UI_SRC");
+    const dst = await connectTarget(page);
+    await dst.getByLabel("신규 테이블 이름").fill("tf_ui_tf");
+    await dst.getByRole("button", { name: "대상 확정", exact: true }).click();
+    const review = page.getByRole("region", { name: "검토" });
+    // 미완성 규칙은 이관을 막는다
+    await review.getByRole("button", { name: "EMP_NM 변환 규칙" }).click();
+    await review.getByRole("button", { name: "규칙 추가" }).click();
+    await review.getByLabel("EMP_NM 규칙 1 종류").selectOption("upper");
+    await review.getByRole("button", { name: "규칙 추가" }).click();
+    await review.getByLabel("EMP_NM 규칙 2 종류").selectOption("template");
+    const run = runPanel(page);
+    await expect(review.getByText("입력이 끝나지 않은 규칙은 이관할 수 없습니다.")).toBeVisible();
+    await expect(run.getByRole("button", { name: "이관 시작" })).toBeDisabled();
+    await expect(run.getByText(/검증 오류 1건을 해결해야 이관할 수 있습니다/)).toBeVisible();
+    await review.getByLabel("EMP_NM 규칙 2 합칠 형식").fill("{EMP_NO}:{@}");
+    // 계산식
+    await review.getByRole("button", { name: "EMP_NM 변환 규칙" }).click(); // 접기
+    await review.getByRole("button", { name: "SALARY 변환 규칙" }).click();
+    await review.getByRole("button", { name: "규칙 추가" }).click();
+    await review.getByLabel("SALARY 규칙 1 종류").selectOption("calc");
+    await review.getByLabel("SALARY 규칙 1 계산식").fill("{SALARY} * 2");
+    await review.getByLabel("SALARY 규칙 1 소수 자리").fill("2");
+    await run.getByRole("button", { name: "사전 점검" }).click();
+    await expect(run.getByText(/원본 3행 중 3행을 이관합니다/)).toBeVisible();
+    await run.getByRole("checkbox", { name: /DB INSERT에 동의/ }).check();
+    await run.getByRole("button", { name: "이관 시작" }).click();
+    await expect(page.getByText("이관 완료: 3행", { exact: true })).toBeVisible();
+    await expect(run.getByRole("region", { name: "이관 결과 검증" })).toContainText("변환 규칙이 있어 값 비교에서 제외", { timeout: 30_000 });
+    expect(pg("SELECT emp_nm FROM tf_ui_tf WHERE emp_no='001';").trim()).toBe("001:KIM O'BRIEN");
+    expect(pg("SELECT emp_nm FROM tf_ui_tf WHERE emp_no='002';").trim()).toBe("002:LEE");
+    expect(pg("SELECT salary = 7000001.00 FROM tf_ui_tf WHERE emp_no='001';").trim()).toBe("t");
+    expect(pg("SELECT salary = 8400000.00 FROM tf_ui_tf WHERE emp_no='002';").trim()).toBe("t");
+  } finally { try { pg(`DROP TABLE IF EXISTS tf_ui_tf; DROP TABLE IF EXISTS tableflow_load_receipts;`); } catch {} }
 });

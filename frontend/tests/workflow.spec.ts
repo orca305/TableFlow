@@ -58,7 +58,7 @@ test("mobile layout fits the viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   const nav = page.getByRole("navigation", { name: "메뉴" });
-  for (const label of ["DB 이관", "파일 변환", "작업 이력", "설정"]) {
+  for (const label of ["DB 이관", "파일 변환", "스케줄", "작업 이력", "설정"]) {
     await nav.getByRole("button", { name: label, exact: true }).click();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${label} 화면이 가로로 넘치지 않아야 합니다`).toBe(true);
   }
@@ -89,7 +89,7 @@ test("sample, duplicate policies, PostgreSQL and CSV downloads", async ({ page }
 test("menu, theme toggle and tooltips", async ({ page }) => {
   await page.goto("/");
   const nav = page.getByRole("navigation", { name: "메뉴" });
-  await expect(nav.getByRole("button")).toHaveText(["DB 이관", "파일 변환", "작업 이력", "설정"]);
+  await expect(nav.getByRole("button")).toHaveText(["DB 이관", "일괄 이관", "파일 변환", "스케줄", "작업 이력", "설정"]);
   await expect(page.getByRole("heading", { name: "DB 이관", exact: true })).toBeVisible();
   await nav.getByRole("button", { name: "설정", exact: true }).click();
   await expect(page.getByRole("heading", { name: "설정", exact: true })).toBeVisible();
