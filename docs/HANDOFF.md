@@ -185,3 +185,8 @@ npx playwright test tests/migration.spec.ts tests/db-to-file.spec.ts    # 기대
 - `LICENSE`(MIT, 저작권자 표기 "TableFlow contributors")를 추가했다. 저작권자 이름·라이선스 종류는 소유자가 확정해 바꿔도 된다.
 - `docs/architecture.md`에 현재 DB 이관 구성(다이어그램)을 추가하고 낡은 문구("스케줄러 없음", "JDBC 미구현")를 고쳤다. `docs/DEVELOPMENT_STATUS.md` 상단에 기록 시점 안내를 달았다.
 - 아직 안 한 공개 준비: 신규 기능(일괄 이관·스케줄·변환) 스크린샷, 접근 보호(인증), 공개 배포, 처리량 추가 측정. 커밋 이력에 테스트용 비밀번호가 있는지 점검은 별도.
+
+## 14. 2026-11-22 Vercel 소개용 배포 준비
+- Vercel은 프런트엔드만 호스팅하므로 백엔드 없이 올리면 기능이 동작하지 않는다. 포트폴리오 소개용으로만 올리고 그 사실을 화면에 알린다.
+- `NEXT_PUBLIC_DEMO_MODE=true`(빌드 시점): `frontend/src/lib/api.ts`가 모든 API 호출을 네트워크 없이 막고(`demoMode`), `app/page.tsx`가 경고 배너를 보여 준다. 로컬에서 데모 모드로 빌드해 배너와 "API 요청 0건"을 확인했다(기본 모드·E2E는 영향 없음, 단 Playwright 실행 전에는 `NEXT_PUBLIC_API_URL`로 다시 빌드할 것).
+- 실제 배포(Vercel 계정 로그인, 프로젝트 생성, 도메인 `*.vercel.app`)는 사용자 계정이 필요해 이 문서 작성 시점에는 하지 않았다. 설정: Root Directory `frontend`, 환경변수 `NEXT_PUBLIC_DEMO_MODE=true`.

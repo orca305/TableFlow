@@ -48,6 +48,10 @@
 - 요청·업로드 크기, XLSX 압축 해제량, 요청 빈도 제한. CSV/Excel 수식 주입 방지
 - 외부 OCR은 서버 허용과 파일별 동의가 모두 있어야 하며, 로컬 OCR이 실패해도 자동으로 외부 전송하지 않습니다
 
+## 소개용 배포 (Vercel)
+
+Vercel에는 프런트엔드(Next.js)만 올릴 수 있고 백엔드(Spring Boot)·OCR 서버는 없으므로, **소개용 배포에서는 기능이 동작하지 않습니다.** 환경변수 `NEXT_PUBLIC_DEMO_MODE=true`로 빌드하면 화면 위쪽에 "실제로는 동작하지 않는다"는 안내가 뜨고, 방문자 브라우저에서 어떤 서버로도 요청을 보내지 않습니다. 설정: Vercel 프로젝트의 Root Directory를 `frontend`로, 환경변수에 `NEXT_PUBLIC_DEMO_MODE=true`를 지정합니다. 실제 사용은 아래 「시작하기」로 로컬에서 실행하세요.
+
 ## 구조
 
 ```text
