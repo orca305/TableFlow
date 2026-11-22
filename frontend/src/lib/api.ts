@@ -2,7 +2,7 @@ import type { Issue } from "./types";
 const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1";
 /** 포트폴리오 소개용 배포(백엔드 없음). 켜면 방문자 브라우저에서 어떤 주소로도 요청을 보내지 않는다. */
 export const demoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
-const demoMessage = "이 배포는 화면만 보여 주는 소개용이라 백엔드 서버가 없어 실제로 동작하지 않습니다. 직접 실행하는 방법은 README를 확인하세요.";
+const demoMessage = "이 배포는 화면만 보여 주는 소개용이라 백엔드 서버가 없어 실제로 동작하지 않습니다.";
 /**
  * 네트워크 오류(서버가 닫은 유휴 연결 재사용 등)는 한 번만 자동으로 다시 보낸다. 이 앱의 요청은 다시 보내도 안전하다:
  * 조회는 부작용이 없고, 적재·이관은 요청 ID로 중복을 막으며, 연결 저장은 이름 기준으로 갱신한다.

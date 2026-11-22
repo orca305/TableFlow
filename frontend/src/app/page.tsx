@@ -45,7 +45,7 @@ export default function Home() {
       <nav className="nav" aria-label="메뉴">{pages.map(p => <button key={p.id} type="button" aria-current={page === p.id ? "page" : undefined} data-tip={p.tip} onClick={() => go(p.id)}>{p.label}</button>)}</nav>
       <ThemeToggle theme={theme} onChange={changeTheme} />
     </div></header>
-    {demoMode && <div className="gut"><div className="alert warning" role="status" style={{ margin: "12px auto 0", maxWidth: 1200 }}><b>포트폴리오 소개용 화면입니다 — 실제로는 동작하지 않습니다.</b> 이 배포에는 백엔드(Spring Boot) 서버가 없어 파일 변환·DB 이관 등 모든 기능이 실패합니다. 화면 구성만 둘러보세요. 기능과 검증 내용, 직접 실행하는 방법은 <a href="https://github.com/orca305/TableFlow" target="_blank" rel="noreferrer">GitHub 저장소(README)</a>에 있습니다.</div></div>}
+    {demoMode && <div className="gut"><div className="alert warning" role="status" style={{ margin: "12px auto 0", maxWidth: 1200 }}><b>포트폴리오 소개용 화면입니다 — 실제로는 동작하지 않습니다.</b> 이 배포에는 백엔드(Spring Boot) 서버가 없어 파일 변환·DB 이관 등 모든 기능이 실패합니다. 화면 구성만 둘러보세요.</div></div>}
     <main className="page gut">
       {/* 화면을 바꿔도 입력 중인 내용이 사라지지 않도록 모두 마운트해 두고 숨긴다. */}
       <div hidden={page !== "migrate"}><MigratePage server={info} saved={saved} reloadSaved={reloadSaved} onHistoryChanged={onHistoryChanged} /></div>
