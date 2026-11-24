@@ -175,7 +175,7 @@ $env:TABLEFLOW_TEST_JDBC='true'; $env:TABLEFLOW_TEST_JDBC_DBMS='oracle,postgresq
 
 ## 문서
 
-[인수인계(먼저 읽기)](docs/HANDOFF.md) · [API](docs/api.md) · [아키텍처](docs/architecture.md) · [DBMS별 지원 범위](docs/DATABASE_SUPPORT.md) · [테스트 결과](docs/TEST_RESULTS.md) · [개발 현황](docs/DEVELOPMENT_STATUS.md) · [요구사항](docs/requirements.md)
+[인수인계 요약(먼저 읽기)](docs/HANDOFF_GPT.md) · [인수인계 상세](docs/HANDOFF.md) · [API](docs/api.md) · [아키텍처](docs/architecture.md) · [DBMS별 지원 범위](docs/DATABASE_SUPPORT.md) · [테스트 결과](docs/TEST_RESULTS.md) · [개발 현황](docs/DEVELOPMENT_STATUS.md) · [요구사항](docs/requirements.md)
 
 ## 라이선스
 
