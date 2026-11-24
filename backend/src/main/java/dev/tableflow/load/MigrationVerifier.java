@@ -100,14 +100,12 @@ public class MigrationVerifier {
 
     /** 결과 배열: [0]=전체 행 수, 이후 컬럼별 측정값을 순서대로. */
     private Object[] aggregate(Credentials c, String schema, String table, List<Mapping> cols, List<List<Measure>> measures, boolean sourceSide, String where) {
-        boolean mysql = c.dbms() == Dbms.mysql || c.dbms() == Dbms.mariadb;
-        String len = mysql ? "CHAR_LENGTH" : "LENGTH";
         List<String> select = new ArrayList<>(List.of("COUNT(*)")); List<Object[]> kinds = new ArrayList<>();
         for (int i = 0; i < cols.size(); i++) {
             String name = JdbcReader.quote(c.dbms(), sourceSide ? cols.get(i).source() : cols.get(i).target());
             for (Measure m : measures.get(i)) {
                 select.add(switch (m.kind()) { case NOT_NULL -> "COUNT(" + name + ")"; case SUM -> "SUM(" + name + ")"; case MIN -> "MIN(" + name + ")";
-                    case MAX -> "MAX(" + name + ")"; case LENGTH -> "SUM(" + len + "(" + name + "))"; });
+                    case MAX -> "MAX(" + name + ")"; case LENGTH -> "SUM(" + dev.tableflow.connection.SqlDialect.lengthExpression(c.dbms(), name) + ")"; });
                 kinds.add(new Object[]{m});
             }
         }

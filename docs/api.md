@@ -148,3 +148,16 @@ Credentials: `{dbms:oracle|postgresql|mysql|mariadb,host,port,database,username,
 - `POST /connections/migrate/batch/check` `{source, sourceSchema, target, targetSchema, tables[], preserveKeys, copyIndexes, copyDefaults, copyForeignKeys, ifExists("skip"|"append"), chunkSize}` → `{items[{table,target,rows,columns,excluded[],targetExists,action(create|append|skip|error),level(ok|warn|error),messages[]}], cycles[], notes[], totalRows, blocked}`. 선택한 테이블(최대 200개)을 외래 키 부모 먼저 순서로 나열하고, 대상 이름(DBMS 관례로 변환)·충돌·컬럼 오류를 점검한다. 아무것도 쓰지 않는다.
 - `POST /connections/migrate/batch` (위 요청 + `requestId`, `confirmed:true`) → 작업 상태. 테이블마다 새로 생성(빈 테이블 포함)·분할 적재하며, `GET /migrate/jobs/{id}`의 `items[{table,target,state(pending|running|succeeded|skipped|failed),totalRows,doneRows,message}]`로 테이블별 진행을 본다. 한 테이블이 실패하면 멈추고, `POST /migrate/jobs/{id}/resume`(또는 같은 `requestId` 재제출)로 재개하면 완료된 테이블은 건너뛰고 실패한 테이블부터 이어서 적재한다.
 - **스케줄** `/api/v1/schedules`(로컬 전용): `GET` 목록 `{enabled, items[]}` / `POST` 등록 `{name, kind("single"|"batch"), request(= /migrate 또는 /migrate/batch 요청 본문), mode("interval"|"daily"), intervalMinutes(5~10080), dailyAt("HH:mm", 서버 시간대), refresh("append"|"replace"), confirmReplace}` / `POST /{id}/run` 지금 실행 / `POST /{id}/enabled {enabled}` / `DELETE /{id}`. 두 연결 모두 **비밀번호를 저장한 연결(savedId)**이어야 하고 정의에는 비밀번호가 저장되지 않는다. 실행마다 새 요청 ID로 일반 이관 작업을 시작하므로 작업 이력에 남는다. `replace`는 실행 전에 대상 테이블의 모든 행을 삭제하고(일괄 이관은 자식 테이블부터) 원본 전체를 다시 적재한다(동의 필수). 이전 회차가 진행 중이면 그 회차는 건너뛴다. 스케줄 이관은 이관 행 수 상한을 최대(1,000,000)로 두고, 일괄 이관은 이미 있는 테이블에 추가 적재한다.
+
+
+## 관리자 반입 JDBC 드라이버 (2026-11-25)
+
+- `GET /api/v1/driver-catalog`: 등록된 `id, dbms, version, sha256, bytes, registeredAt` 목록.
+- `POST /api/v1/driver-catalog`: multipart `dbms`, `version`, `file`. 단일 JAR 최대 10MB, 전체 32개. 동일 DBMS/버전/해시의 재요청은 기존 항목 반환. 다른 버전 이름으로 동일 파일 중복 등록은 거부.
+- 두 API 모두 `X-TableFlow-Admin-Key`와 루프백 주소/허용 Origin 필요. 서버 `TABLEFLOW_DRIVERS_ADMIN_KEY`가 32자 미만이거나 비어 있으면 거부. 삭제 API 없음.
+- `GET /api/v1/connections/drivers` 응답에 `installedDrivers` 목록 추가. 각 기본 드라이버 항목의 `capabilities`에는 `browse/load/createTable/preserveKeys/experimental`을 명시하며, `available`은 기본 제공 JAR의 존재 여부를 뜻한다. 이 목록에는 JAR 경로나 관리자 키·비밀번호가 포함되지 않음.
+- 모든 연결 요청의 `Credentials`에 선택적 `driverId` 추가. 미지정이면 기본 제공 드라이버, 지정하면 해당 DBMS 등록 JAR만 사용. 실패 시 다른 드라이버로 자동 대체하지 않음. 저장 연결 응답에도 `driverId` 유지.
+- `dbms=sqlserver` 추가. Microsoft JAR는 관리자 반입 방식이며 기본 `TABLEFLOW_SQLSERVER_ENABLED=true`. 이 설정으로 별도 차단한 연결 요청은 `JDBC_EXPERIMENTAL_DISABLED`로 거부. SQL 파일 내보내기의 별도 방언 목록은 기존 4종을 유지한다.
+- 비밀번호를 저장한 연결의 driverId를 바꾸면 기존 암호를 사용할 수 없으며 다시 입력해야 함.
+
+운영 인증/역할 기반 권한은 후속 단계다. 현재 관리 키 기능을 내부 서버 인증 완료로 집계하지 않는다. 자세한 실행과 검증 상태는 [INTRANET_PROGRESS.md](INTRANET_PROGRESS.md) 참조.

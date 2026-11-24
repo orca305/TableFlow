@@ -83,7 +83,7 @@ public class JdbcReader {
         return explorer.withConnection(credentials, true, connection -> extract(connection, credentials.dbms(), schema, table, columns, size, -1, keyset, where));
     }
     private List<String> primaryKey(Connection connection, Dbms dbms, String schema, String table) throws SQLException {
-        boolean catalogBased = dbms == Dbms.mysql || dbms == Dbms.mariadb;
+        boolean catalogBased = SqlDialect.catalogBased(dbms);
         Map<Integer, String> keys = new TreeMap<>();
         try (var rows = connection.getMetaData().getPrimaryKeys(catalogBased ? schema : null, catalogBased ? null : schema, table)) {
             while (rows.next()) keys.put(rows.getInt("KEY_SEQ"), rows.getString("COLUMN_NAME"));
@@ -106,7 +106,7 @@ public class JdbcReader {
         String filter = RowFilter.clean(where);
         if (limit < 1 || limit > MAX_ROWS) throw new IllegalArgumentException("조회 행 수는 1~" + MAX_ROWS + " 사이여야 합니다.");
         require(schema); require(table);
-        boolean catalogBased = dbms == Dbms.mysql || dbms == Dbms.mariadb;
+        boolean catalogBased = SqlDialect.catalogBased(dbms);
         var meta = connection.getMetaData();
         // 1) 메타데이터에 실제로 존재하는 컬럼만 허용 (SQL 주입 방지 + 정확한 대소문자)
         Map<String, int[]> available = new LinkedHashMap<>();
@@ -163,17 +163,18 @@ public class JdbcReader {
             }
             sql += whereClause(filter, keyCondition);
             sql += " ORDER BY " + String.join(", ", keyColumns.stream().map(n -> quote(dbms, n)).toList());
-            sql += dbms == Dbms.oracle ? " FETCH FIRST " + limit + " ROWS ONLY" : " LIMIT " + limit;
+            sql += SqlDialect.first(dbms, limit);
         } else if (offset >= 0) {
             sql += whereClause(filter, null);
             List<String> order = new ArrayList<>(); // 기본 키(KEY_SEQ 순) → 없으면 선택한 컬럼 전체
             List<String> keys = primaryKey(connection, dbms, schema, table);
             (keys.isEmpty() ? names : keys).forEach(name -> order.add(quote(dbms, name)));
             sql += " ORDER BY " + String.join(", ", order);
-            sql += dbms == Dbms.oracle ? " OFFSET " + offset + " ROWS FETCH NEXT " + limit + " ROWS ONLY" : " LIMIT " + limit + " OFFSET " + offset;
+            sql += SqlDialect.page(dbms, limit, offset);
         } else {
             sql += whereClause(filter, null);
-            if (dbms == Dbms.oracle) sql += " FETCH FIRST " + limit + " ROWS ONLY";
+            if (dbms == Dbms.sqlserver) sql += " ORDER BY (SELECT NULL)";
+            sql += SqlDialect.first(dbms, limit);
         }
         List<Row> rows = new ArrayList<>();
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -259,8 +260,7 @@ public class JdbcReader {
     }
 
     public static String quote(Dbms dbms, String identifier) {
-        char q = dbms == Dbms.mysql || dbms == Dbms.mariadb ? '`' : '"';
-        return q + identifier.replace(String.valueOf(q), "" + q + q) + q;
+        return SqlDialect.quote(dbms, identifier);
     }
     private static void require(String value) {
         if (value == null || value.isBlank() || value.length() > 128 || value.chars().anyMatch(c -> c < 32))

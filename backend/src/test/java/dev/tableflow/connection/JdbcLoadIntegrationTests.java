@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class JdbcLoadIntegrationTests {
     @Autowired JdbcExplorer explorer; @Autowired JdbcLoader loader; @Autowired FileParser parser;
     Credentials credentials(Dbms db) {
-        int port=switch(db){case postgresql->15432;case mysql->13316;case mariadb->13317;case oracle->11521;};
+        int port=switch(db){case postgresql->15432;case mysql->13316;case mariadb->13317;case oracle->11521;default->throw new IllegalArgumentException("전용 테스트 DB가 없습니다.");};
         return new Credentials(db,"localhost",port,db==Dbms.oracle?"FREEPDB1":"tableflow","tableflow","TableFlowTest2026",false);
     }
     String quote(Dbms db,String id){String q=(db==Dbms.mysql || db==Dbms.mariadb)?"`":"\"";return q+id+q;}
@@ -33,7 +33,7 @@ class JdbcLoadIntegrationTests {
         var cols=new ArrayList<Column>();for(int i=0;i<4;i++){var col=t.columns().get(i);cols.add(new Column(col.id(),col.name(),col.name(),types.get(i),false,true,null,null,null));}
         return new Table(t.schemaVersion(),t.tableId(),t.name(),t.source(),cols,t.rows());
     }
-    @ParameterizedTest @EnumSource(Dbms.class)
+    @ParameterizedTest @EnumSource(value=Dbms.class, names={"oracle","postgresql","mysql","mariadb"})
     void actualConnectionMetadataCommitReplayAndFullRollback(Dbms db)throws Exception {
         Assumptions.assumeTrue(Arrays.asList(System.getenv().getOrDefault("TABLEFLOW_TEST_JDBC_DBMS","postgresql,mysql,mariadb").split(",")).contains(db.name()));
         var c=credentials(db);String schema=db==Dbms.postgresql?"public":db==Dbms.oracle?"TABLEFLOW":"tableflow";

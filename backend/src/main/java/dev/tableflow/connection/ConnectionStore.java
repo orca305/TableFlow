@@ -34,10 +34,10 @@ public class ConnectionStore {
 
     /** 브라우저에 보여주는 형태. 비밀번호는 포함하지 않고 저장 여부만 알린다. */
     public record Saved(String id, String name, Dbms dbms, String host, int port, String database, String username, boolean tls,
-                        boolean passwordSaved, String savedAt) {}
+                        boolean passwordSaved, String savedAt, String driverId) {}
     /** 파일에 기록되는 형태. password는 Base64(IV+암호문)이며 비밀번호를 저장하지 않으면 null이다. */
     record Stored(String id, String name, Dbms dbms, String host, int port, String database, String username, boolean tls,
-                  String password, String savedAt) {}
+                  String password, String savedAt, String driverId) {}
 
     private final boolean enabled, passwordAllowed;
     private final Path file, keyFile; private final String envKey; private final ObjectMapper json;
@@ -74,10 +74,12 @@ public class ConnectionStore {
         String secret = null;
         if (savePassword) {
             if (c.password() != null && !c.password().isEmpty()) secret = encrypt(id, c.password());
-            else if (old != null && old.password() != null) secret = old.password();
+            else if (old != null && old.password() != null && old.dbms() == c.dbms()
+                    && old.host().equalsIgnoreCase(c.host()) && old.port() == c.port() && old.database().equals(c.database())
+                    && old.username().equals(c.username()) && old.tls() == c.tls() && Objects.equals(old.driverId(), c.driverId())) secret = old.password();
             else throw new IllegalArgumentException("비밀번호를 입력해야 저장할 수 있습니다.");
         }
-        Stored next = new Stored(id, name.strip(), c.dbms(), c.host(), c.port(), c.database(), c.username(), c.tls(), secret, Instant.now().toString());
+        Stored next = new Stored(id, name.strip(), c.dbms(), c.host(), c.port(), c.database(), c.username(), c.tls(), secret, Instant.now().toString(), c.driverId());
         items.removeIf(s -> s.id().equals(id)); items.add(next);
         write(items);
         return view(next);
@@ -95,7 +97,7 @@ public class ConnectionStore {
     public synchronized String findSavedId(Credentials c) {
         if (!enabled) return null;
         return read().stream().filter(s -> s.password() != null && s.dbms() == c.dbms() && s.host().equalsIgnoreCase(c.host()) && s.port() == c.port()
-            && s.database().equals(c.database()) && s.username().equals(c.username()) && s.tls() == c.tls()).map(Stored::id).findFirst().orElse(null);
+            && s.database().equals(c.database()) && s.username().equals(c.username()) && s.tls() == c.tls() && Objects.equals(s.driverId(), c.driverId())).map(Stored::id).findFirst().orElse(null);
     }
     /** 요청의 접속 정보가 저장된 연결과 일치할 때만 저장된 비밀번호를 돌려준다. */
     public synchronized String passwordFor(Credentials c) {
@@ -104,14 +106,14 @@ public class ConnectionStore {
             .orElseThrow(() -> new Failure(404, "CONNECTION_NOT_FOUND", "저장된 연결을 찾을 수 없습니다. 비밀번호를 입력해주세요."));
         if (s.password() == null) throw new Failure(401, "JDBC_AUTH", "이 연결은 비밀번호를 저장하지 않았습니다. 비밀번호를 입력해주세요.");
         if (s.dbms() != c.dbms() || !s.host().equalsIgnoreCase(c.host()) || s.port() != c.port() || !s.database().equals(c.database())
-                || !s.username().equals(c.username()) || s.tls() != c.tls())
+                || !s.username().equals(c.username()) || s.tls() != c.tls() || !Objects.equals(s.driverId(), c.driverId()))
             throw new Failure(403, "CONNECTION_MISMATCH", "저장된 연결과 접속 정보가 달라 저장된 비밀번호를 사용할 수 없습니다. 비밀번호를 입력해주세요.");
         return decrypt(s.id(), s.password());
     }
 
     // ---------------------------------------------------------------- 내부
     private static Saved view(Stored s) {
-        return new Saved(s.id(), s.name(), s.dbms(), s.host(), s.port(), s.database(), s.username(), s.tls(), s.password() != null, s.savedAt());
+        return new Saved(s.id(), s.name(), s.dbms(), s.host(), s.port(), s.database(), s.username(), s.tls(), s.password() != null, s.savedAt(), s.driverId());
     }
     private void requireEnabled() {
         if (!enabled) throw new Failure(503, "CONNECTIONS_DISABLED", "서버에서 연결 저장이 비활성화되어 있습니다.");

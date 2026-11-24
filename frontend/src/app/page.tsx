@@ -53,7 +53,7 @@ export default function Home() {
       <div hidden={page !== "file"}><FilePage server={info} saved={saved} reloadSaved={reloadSaved} onHistoryChanged={onHistoryChanged} /></div>
       <div hidden={page !== "schedule"}><SchedulePage visible={page === "schedule"} /></div>
       <div hidden={page !== "history"}><HistoryPage refreshKey={historyKey} /></div>
-      <div hidden={page !== "settings"}><SettingsPage server={info} error={error} saved={saved} reloadSaved={reloadSaved} /></div>
+      <div hidden={page !== "settings"}><SettingsPage visible={page === "settings"} server={info} error={error} saved={saved} reloadSaved={reloadSaved} /></div>
     </main>
     <TipLayer />
   </>;

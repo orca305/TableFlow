@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class MigrationTransformIntegrationTests {
     @Autowired JdbcExplorer explorer; @Autowired MigrationService migration; @Autowired MigrationVerifier verifier;
     Credentials credentials(Dbms db) {
-        int port=switch(db){case postgresql->15432;case mysql->13316;case mariadb->13317;case oracle->11521;};
+        int port=switch(db){case postgresql->15432;case mysql->13316;case mariadb->13317;case oracle->11521;default->throw new IllegalArgumentException("전용 테스트 DB가 없습니다.");};
         return new Credentials(db,"localhost",port,db==Dbms.oracle?"FREEPDB1":"tableflow","tableflow","TableFlowTest2026",false);
     }
     String schema(Dbms db){return db==Dbms.postgresql?"public":db==Dbms.oracle?"TABLEFLOW":"tableflow";}

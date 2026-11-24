@@ -11,8 +11,11 @@ import java.util.*;
 @Service
 public class JdbcExplorer {
     private final boolean enabled;
+    @Value("${tableflow.jdbc.sqlserver-enabled:true}") private boolean sqlserverEnabled = true;
     private final Set<String> hosts;
     private ConnectionStore store;
+    private DriverCatalog driverCatalog;
+    @org.springframework.beans.factory.annotation.Autowired(required = false) void setDriverCatalog(DriverCatalog catalog) { this.driverCatalog = catalog; }
     @org.springframework.beans.factory.annotation.Autowired(required = false) void setStore(ConnectionStore store) { this.store = store; }
     public JdbcExplorer(@Value("${tableflow.jdbc.enabled:false}") boolean enabled,
                         @Value("${tableflow.jdbc.allowed-hosts:localhost,127.0.0.1}") String allowedHosts) {
@@ -21,7 +24,7 @@ public class JdbcExplorer {
     }
     public enum Dbms {
         oracle("oracle.jdbc.OracleDriver", 1521), postgresql("org.postgresql.Driver", 5432),
-        mysql("com.mysql.cj.jdbc.Driver", 3306), mariadb("org.mariadb.jdbc.Driver", 3306);
+        mysql("com.mysql.cj.jdbc.Driver", 3306), mariadb("org.mariadb.jdbc.Driver", 3306), sqlserver("com.microsoft.sqlserver.jdbc.SQLServerDriver", 1433);
         final String driver; final int port;
         Dbms(String driver, int port) { this.driver = driver; this.port = port; }
     }
@@ -30,7 +33,11 @@ public class JdbcExplorer {
         @Min(1) @Max(65535) int port,
         @NotBlank @Pattern(regexp="[A-Za-z0-9_][A-Za-z0-9_.$-]{0,127}") String database,
         @NotBlank @Size(max=128) String username, @NotNull @Size(max=1024) String password,
-        boolean tls, @Pattern(regexp="[0-9a-fA-F-]{36}") String savedId) {
+        boolean tls, @Pattern(regexp="[0-9a-fA-F-]{36}") String savedId,
+        @Pattern(regexp="[0-9a-f-]{36}") String driverId) {
+        public Credentials(Dbms dbms, String host, int port, String database, String username, String password, boolean tls, String savedId) {
+            this(dbms, host, port, database, username, password, tls, savedId, null);
+        }
         /** 저장된 연결을 쓰지 않는 일반 접속. */
         public Credentials(Dbms dbms, String host, int port, String database, String username, String password, boolean tls) {
             this(dbms, host, port, database, username, password, tls, null);
@@ -38,16 +45,24 @@ public class JdbcExplorer {
         /** 비밀번호가 비어 있고 savedId가 있으면 저장된 연결의 비밀번호를 서버에서 복호화해 사용한다. */
         @Override public String toString() { return "Credentials[redacted]"; }
     }
-    public record DriverInfo(Dbms dbms, int defaultPort, boolean available, String version) {}
+    public record DriverCapabilities(boolean browse, boolean load, boolean createTable, boolean preserveKeys, boolean experimental) {}
+    public record DriverInfo(Dbms dbms, int defaultPort, boolean available, String version, DriverCapabilities capabilities) {}
+    private DriverCapabilities capabilities(Dbms db) {
+        return switch (db) {
+            case oracle, postgresql, mysql, mariadb -> new DriverCapabilities(true, true, true, true, false);
+            case sqlserver -> new DriverCapabilities(sqlserverEnabled, sqlserverEnabled, sqlserverEnabled, sqlserverEnabled, false);
+        };
+    }
     public record Registry(boolean enabled, List<DriverInfo> drivers) {}
     public Registry registry() {
         return new Registry(enabled, Arrays.stream(Dbms.values()).map(db -> {
             try {
                 Driver driver = (Driver) Class.forName(db.driver).getDeclaredConstructor().newInstance();
-                return new DriverInfo(db, db.port, true, driver.getMajorVersion() + "." + driver.getMinorVersion());
-            } catch (ReflectiveOperationException | LinkageError e) { return new DriverInfo(db, db.port, false, ""); }
+                return new DriverInfo(db, db.port, true, driver.getMajorVersion() + "." + driver.getMinorVersion(), capabilities(db));
+            } catch (ReflectiveOperationException | LinkageError e) { return new DriverInfo(db, db.port, false, "", capabilities(db)); }
         }).toList());
     }
+    public java.util.List<DriverCatalog.Entry> installedDrivers() { return driverCatalog == null ? java.util.List.of() : driverCatalog.list(); }
     public record ServerInfo(String product, String serverVersion, String driver, String driverVersion) {}
     public record Items<T>(List<T> items, boolean truncated) {}
     public record ColumnInfo(String name, String type, int jdbcType, int size, int scale,
@@ -146,7 +161,9 @@ public class JdbcExplorer {
                 while (rows != null && rows.next()) {
                     String name = Optional.ofNullable(rows.getString("FK_NAME")).orElse("fk_" + rows.getString("PKTABLE_NAME"));
                     fks.computeIfAbsent(name, k -> new TreeMap<>()).put(rows.getInt("KEY_SEQ"), new String[]{rows.getString("FKCOLUMN_NAME"), rows.getString("PKCOLUMN_NAME")});
-                    parents.put(name, new String[]{catalogBased ? rows.getString("PKTABLE_CAT") : rows.getString("PKTABLE_SCHEM"), rows.getString("PKTABLE_NAME")});
+                    String parentSchema = catalogBased ? rows.getString("PKTABLE_CAT") : rows.getString("PKTABLE_SCHEM");
+                    String parentTable = rows.getString("PKTABLE_NAME");
+                    parents.put(name, new String[]{parentSchema, parentTable});
                 }
             } catch (SQLException ignored) { /* 외래 키를 못 읽으면 복제만 건너뛴다 */ }
             List<ForeignKeyInfo> foreign = new ArrayList<>();
@@ -162,7 +179,7 @@ public class JdbcExplorer {
             return new TableExtras(indexes, foreign, defaults);
         });
     }
-    private boolean catalogBased(Dbms dbms) { return dbms == Dbms.mysql || dbms == Dbms.mariadb; }
+    private boolean catalogBased(Dbms dbms) { return SqlDialect.catalogBased(dbms); }
     private void requireName(String name) {
         if (name == null || name.isBlank() || name.length() > 128 || name.chars().anyMatch(c -> c < 32))
             throw new IllegalArgumentException("조회할 스키마·테이블 이름을 선택해주세요.");
@@ -181,6 +198,7 @@ public class JdbcExplorer {
             case postgresql -> "jdbc:postgresql://" + c.host() + ":" + c.port() + "/" + c.database();
             case mysql -> "jdbc:mysql://" + c.host() + ":" + c.port() + "/" + c.database();
             case mariadb -> "jdbc:mariadb://" + c.host() + ":" + c.port() + "/" + c.database();
+            case sqlserver -> "jdbc:sqlserver://" + c.host() + ":" + c.port() + ";databaseName=" + c.database();
         };
     }
     private String password(Credentials c) {
@@ -194,6 +212,11 @@ public class JdbcExplorer {
         if (c.dbms() == Dbms.oracle) {
             props.setProperty("oracle.net.CONNECT_TIMEOUT", "5000"); props.setProperty("oracle.net.OUTBOUND_CONNECT_TIMEOUT", "5000");
             props.setProperty("oracle.jdbc.ReadTimeout", "10000"); props.setProperty("oracle.net.ssl_server_dn_match", "true");
+        } else if (c.dbms() == Dbms.sqlserver) {
+            props.setProperty("encrypt", Boolean.toString(c.tls()));
+            props.setProperty("trustServerCertificate", "false");
+            props.setProperty("loginTimeout", "5"); props.setProperty("socketTimeout", "10000");
+            props.setProperty("applicationName", "TableFlow"); props.setProperty("sendStringParametersAsUnicode", "true");
         } else {
             boolean pg = c.dbms() == Dbms.postgresql;
             props.setProperty("connectTimeout", pg ? "5" : "5000"); props.setProperty("socketTimeout", pg ? "10" : "10000");
@@ -206,6 +229,8 @@ public class JdbcExplorer {
     @FunctionalInterface public interface MetadataWork<T> { T run(Connection connection) throws SQLException; }
     private <T> T connected(Credentials credentials, MetadataWork<T> work) { return withConnection(credentials, true, work); }
     public <T> T withConnection(Credentials credentials, boolean readOnly, MetadataWork<T> work) {
+        if (credentials.dbms() == Dbms.sqlserver && !sqlserverEnabled)
+            throw new Failure(503, "JDBC_EXPERIMENTAL_DISABLED", "서버에서 SQL Server 연결이 비활성화되어 있습니다. TABLEFLOW_SQLSERVER_ENABLED 설정을 확인해주세요.");
         if (!enabled) throw new Failure(503, "JDBC_DISABLED", "서버에서 DB 탐색을 활성화해주세요. TABLEFLOW_JDBC_ENABLED=true 설정이 필요합니다.");
         if (!hosts.contains(credentials.host().toLowerCase(Locale.ROOT))) throw new Failure(403, "JDBC_HOST_DENIED", "서버의 DB 호스트 허용 목록에 등록되지 않았습니다.");
         if (!credentials.tls()) {
@@ -215,6 +240,15 @@ public class JdbcExplorer {
             } catch (UnknownHostException e) { throw new Failure(400, "JDBC_HOST", "DB 호스트를 찾을 수 없습니다. 호스트 이름을 확인해주세요."); }
         }
         try {
+            if (credentials.driverId() != null) {
+                if (driverCatalog == null) throw new Failure(503, "JDBC_DRIVER", "등록 드라이버 기능을 사용할 수 없습니다.");
+                var loaded = driverCatalog.open(credentials.driverId(), credentials.dbms());
+                try (Connection connection = loaded.driver().connect(url(credentials), properties(credentials))) {
+                    if (connection == null) throw new Failure(503, "JDBC_DRIVER", "선택한 드라이버가 접속 URL을 지원하지 않습니다.");
+                    connection.setReadOnly(readOnly);
+                    return work.run(connection);
+                }
+            }
             // Explicit driver selection prevents MariaDB/MySQL URL ambiguity.
             Class.forName(credentials.dbms().driver);
             try (Connection connection = DriverManager.getConnection(url(credentials), properties(credentials))) {

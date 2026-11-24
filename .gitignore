@@ -22,3 +22,6 @@ test-results/
 **/data/jobs.json.tmp
 **/data/schedules.json
 **/data/schedules.json.tmp
+
+# 관리자 반입 JDBC 드라이버(라이선스별 별도 배포)
+**/data/drivers/

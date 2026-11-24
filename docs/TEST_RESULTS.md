@@ -169,3 +169,14 @@ Oracle 대상 테이블에 IDENTITY 컬럼이 있으면 `JdbcLoader`의 스키�
 | Playwright 기본 | 10 통과 / 13 건너뜀(실제 DB·OCR·스크린샷 전용) / 실패 0 |
 | Playwright 실서버(`migration`·`db-to-file`, 연속 2회 반복) | 5개 통과 / 실패 0 |
 | 미검증 | 로컬 OCR 모델 실행, 원격 CI, 공개 배포, 수십만 행 이상 성능 |
+
+
+## 2026-11-25: 관리자 JDBC 반입 및 SQL Server Developer
+
+범위는 [진행 기록](INTRANET_PROGRESS.md) 참조. 사용자 요청으로 Tibero/CUBRID는 보류했다.
+
+- SQL Server 2022 Developer `16.0.4325.4`, Microsoft JDBC `13.2.1.jre11` 반입 JAR 경로.
+- SQL Server 실제 테스트 4개: PostgreSQL 왕복·Unicode/NULL/날짜/정밀도·동일 요청 재전송·IDENTITY 보존·분할 실패/재개·FK/인덱스/기본값·트리거/미신뢰 인증서 거부.
+- 전체 실제 DB 회귀: 153개 통과, 4개 건너뜀, 실패 0. 기존 Oracle/PostgreSQL/MySQL/MariaDB 포함.
+- 브라우저 7개 통과. 드라이버 2개는 API mock 기반 버전 전달/관리 키 비저장 검사다.
+- Webpack 빌드/타입 검사 통과. 기본 Turbopack 빌드의 Node 하위 프로세스 오류는 미해결이며 원인은 확정하지 않았다.

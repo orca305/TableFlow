@@ -37,12 +37,12 @@ export default function ConnectionPicker({ role, server, saved, onSavedChanged, 
 
   /** 저장된 연결과 필드가 달라졌는지(달라졌다면 저장된 비밀번호는 쓸 수 없다). */
   const dirty = !!current && (current.dbms !== conn.dbms || current.host !== conn.host || current.port !== conn.port
-    || current.database !== conn.database || current.username !== conn.username || current.tls !== conn.tls);
+    || current.database !== conn.database || current.username !== conn.username || current.tls !== conn.tls || (current.driverId ?? undefined) !== conn.driverId);
 
   function load(item: SavedConnection | null) {
     setConfirmDelete(false); onVerified(null);
     if (!item) { setConn(blankConnection("postgresql")); setName(""); setSavePassword(false); setStatus({ kind: "idle", text: "신규 연결 · 정보를 입력하고 연결 확인을 누르세요" }); return; }
-    setConn({ dbms: item.dbms, host: item.host, port: item.port, database: item.database, username: item.username, password: "", tls: item.tls });
+    setConn({ dbms: item.dbms, host: item.host, port: item.port, database: item.database, username: item.username, password: "", tls: item.tls, driverId: item.driverId ?? undefined });
     setName(item.name); setSavePassword(item.passwordSaved);
     setStatus(item.passwordSaved ? { kind: "idle", text: "저장된 비밀번호를 확인하는 중입니다" } : { kind: "warn", text: "비밀번호를 입력하고 연결 확인을 누르세요" });
   }
@@ -93,6 +93,8 @@ export default function ConnectionPicker({ role, server, saved, onSavedChanged, 
   const pillClass = status.kind === "ok" ? "ok" : status.kind === "bad" ? "bad" : status.kind === "warn" ? "warn" : "";
   const dbmsOptions = (Object.keys(PORTS) as Dbms[]);
   const locked = disabled || status.kind === "busy";
+  const capabilities = server?.drivers.find(d => d.dbms === conn.dbms)?.capabilities;
+  const canConnect = role === "원본" ? capabilities?.browse : capabilities?.load;
   return <div className="grid">
     <label className="f">연결<Help text={role === "원본" ? "접속할 DB를 선택합니다. 목록에 없으면 '신규 연결'을 선택하세요." : "데이터를 넣을 DB를 선택합니다. 목록에 없으면 '신규 연결'을 선택하세요."} />
       <select aria-label={`${role} 연결`} value={selected} disabled={locked} onChange={e => choose(e.target.value)}>
@@ -104,15 +106,21 @@ export default function ConnectionPicker({ role, server, saved, onSavedChanged, 
         {current && confirmDelete && <><span className="mut">저장된 연결과 비밀번호가 삭제됩니다.</span><button type="button" className="btn sm" onClick={() => void remove()}>삭제 확인</button><button type="button" className="btn sm" onClick={() => setConfirmDelete(false)}>취소</button></>}
       </div>
       <div className="form form3">
-        <label className="f">종류<select aria-label={`${role} 종류`} value={conn.dbms} disabled={locked} onChange={e => { const dbms = e.target.value as Dbms; edit({ dbms, port: PORTS[dbms] }); }}>{dbmsOptions.map(d => <option key={d} value={d}>{DBMS_LABEL[d]}</option>)}</select></label>
+        <label className="f">종류<select aria-label={`${role} 종류`} value={conn.dbms} disabled={locked} onChange={e => { const dbms = e.target.value as Dbms; edit({ dbms, port: PORTS[dbms], driverId: undefined }); }}>{dbmsOptions.map(d => <option key={d} value={d}>{DBMS_LABEL[d]}</option>)}</select></label>
         <label className="f">주소<Help text="DB 서버의 호스트 이름 또는 IP입니다. 로컬이 아닌 주소는 TLS 보안 연결이 필요합니다." /><input aria-label={`${role} 주소`} value={conn.host} maxLength={253} disabled={locked} onChange={e => edit({ host: e.target.value })} /></label>
-        <label className="f">포트<Help text="DB 접속 포트입니다. 기본값은 Oracle 1521, PostgreSQL 5432, MySQL·MariaDB 3306입니다." /><input aria-label={`${role} 포트`} type="number" min={1} max={65535} value={conn.port} disabled={locked} onChange={e => edit({ port: Number(e.target.value) })} /></label>
+        <label className="f">포트<Help text="DB 접속 포트입니다. 기본값은 Oracle 1521, PostgreSQL 5432, MySQL·MariaDB 3306, SQL Server 1433입니다." /><input aria-label={`${role} 포트`} type="number" min={1} max={65535} value={conn.port} disabled={locked} onChange={e => edit({ port: Number(e.target.value) })} /></label>
         <label className="f">{conn.dbms === "oracle" ? "서비스명" : "데이터베이스"}<Help text="접속할 DB 이름입니다. Oracle은 서비스명을 입력합니다." /><input aria-label={`${role} 데이터베이스`} value={conn.database} maxLength={128} disabled={locked} onChange={e => edit({ database: e.target.value })} /></label>
         <label className="f">사용자<input aria-label={`${role} 사용자`} autoComplete="off" value={conn.username} maxLength={128} disabled={locked} onChange={e => edit({ username: e.target.value })} /></label>
         <label className="f">비밀번호<Help text="연결 확인에 사용합니다. '비밀번호 저장'을 선택하지 않으면 서버에도 브라우저에도 저장하지 않습니다." />
           <input aria-label={`${role} 비밀번호`} type="password" autoComplete="new-password" maxLength={1024} value={conn.password} disabled={locked}
             placeholder={current?.passwordSaved && !dirty ? "저장된 비밀번호 사용" : "저장되지 않습니다"} onChange={e => { setConn(c => ({ ...c, password: e.target.value })); onVerified(null); }} /></label>
       </div>
+      <label className="f">JDBC 드라이버<Help text="기본 제공 드라이버 또는 관리자가 등록한 버전을 선택합니다. 등록 드라이버는 서버에 보관되며 인터넷에서 다운로드하지 않습니다." />
+        <select aria-label={`${role} JDBC 드라이버`} value={conn.driverId ?? ""} disabled={locked} onChange={e => edit({ driverId: e.target.value || undefined })}>
+          <option value="">{server?.drivers.find(d => d.dbms === conn.dbms)?.available ? "기본 제공 드라이버" : "기본 제공 드라이버 없음 · 등록 버전을 선택하세요"}</option>
+          {(server?.installedDrivers ?? []).filter(d => d.dbms === conn.dbms).map(d => <option key={d.id} value={d.id}>{DBMS_LABEL[d.dbms]} {d.version} · {d.sha256.slice(0, 12)}</option>)}
+        </select>
+      </label>
       <div className="row">
         <span className="check"><input id={`${uid}-tls`} type="checkbox" checked={conn.tls} disabled={locked} onChange={e => edit({ tls: e.target.checked })} /><label htmlFor={`${uid}-tls`}>TLS 보안 연결 사용</label><Help text="인증서와 호스트 이름을 검증하는 암호화 연결입니다. 로컬이 아닌 DB에는 필수입니다." /></span>
         <span className="check"><input id={`${uid}-savepw`} type="checkbox" checked={savePassword} disabled={locked || !canSavePassword} onChange={e => setSavePassword(e.target.checked)} />
@@ -120,7 +128,8 @@ export default function ConnectionPicker({ role, server, saved, onSavedChanged, 
           <Help text={canSavePassword ? "선택하면 비밀번호를 암호화(AES-256)해서 이 컴퓨터의 TableFlow 서버에만 저장합니다. 브라우저로 다시 내려보내지 않으며, 이후에는 입력 없이 연결합니다." : "서버에서 비밀번호 저장이 비활성화되어 있습니다(TABLEFLOW_CONNECTIONS_SAVE_PASSWORD)."} /></span>
       </div>
       {!current && server?.savedEnabled && <label className="f" style={{ maxWidth: 360 }}>연결 이름(선택)<Help text="비워 두면 '종류 · 주소:포트/데이터베이스'로 저장합니다." /><input aria-label={`${role} 연결 이름`} value={name} maxLength={60} disabled={locked} onChange={e => setName(e.target.value)} placeholder={connectionName(conn)} /></label>}
-      <div className="row"><button type="button" className="btn" disabled={locked || !server?.enabled} data-tip="입력한 정보로 DB에 연결할 수 있는지 확인합니다. 성공하면 연결 정보가 저장됩니다." onClick={() => void test(false)}>연결 확인</button>
+      {canConnect === false && <p className="mut" role="status">이 DBMS는 서버에서 활성화되지 않았습니다. 테스트 설치에서 해당 DBMS 활성화 설정을 확인해주세요.</p>}
+      <div className="row"><button type="button" className="btn" disabled={locked || !server?.enabled || canConnect === false} data-tip="입력한 정보로 DB에 연결할 수 있는지 확인합니다. 성공하면 연결 정보가 저장됩니다." onClick={() => void test(false)}>연결 확인</button>
         <span className="mut">연결 정보는 이 컴퓨터의 서버에만 저장됩니다. 로컬이 아닌 주소는 TLS 보안 연결이 필요합니다.</span></div>
     </div>
   </div>;

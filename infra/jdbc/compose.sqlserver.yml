@@ -1,0 +1,16 @@
+# 선택 실행 전용. 기본 4종 DB 테스트/CI에는 포함되지 않는다.
+# SQL Server 라이선스를 검토한 사용자가 TABLEFLOW_SQLSERVER_ACCEPT_EULA=Y를 설정해야 기동된다.
+name: tableflow-jdbc-tests-sqlserver
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest@sha256:4525e3efac9f3e241cb003bb2ff2a82818b502f37e12049d788b1a9fa7e13b7f
+    ports: ["127.0.0.1:11433:1433"]
+    environment:
+      ACCEPT_EULA: ${TABLEFLOW_SQLSERVER_ACCEPT_EULA:?SQL Server EULA 검토 후 Y 설정 필요}
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: TableFlowRootTest2026!
+    healthcheck:
+      test: ["CMD-SHELL", "SQLCMDPASSWORD=$$MSSQL_SA_PASSWORD /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -Q 'SELECT 1' -b"]
+      interval: 5s
+      retries: 60
+      start_period: 30s

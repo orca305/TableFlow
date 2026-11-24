@@ -16,10 +16,9 @@ public final class TableDdl {
     }
 
     public static String quote(Dbms db, String id) {
-        char q = family(db) ? '`' : '"';
-        return q + id.replace(String.valueOf(q), "" + q + q) + q;
+        return dev.tableflow.connection.SqlDialect.quote(db, id);
     }
-    private static boolean family(Dbms db) { return db == Dbms.mysql || db == Dbms.mariadb; }
+    private static boolean family(Dbms db) { return dev.tableflow.connection.SqlDialect.catalogBased(db); }
 
     public static String createTable(Dbms db, String schema, String table, List<Col> cols) {
         if (cols.isEmpty()) throw new IllegalArgumentException("생성할 컬럼이 없습니다.");
@@ -40,7 +39,7 @@ public final class TableDdl {
     public static String createIndex(Dbms db, String schema, String table, String index, boolean unique, List<String> columns) {
         checkName(index, db);
         String cols = String.join(", ", columns.stream().map(c -> quote(db, c)).toList());
-        String name = db == Dbms.oracle ? quote(db, schema) + "." + quote(db, index) : quote(db, index);
+        String name = (db == Dbms.oracle) ? quote(db, schema) + "." + quote(db, index) : quote(db, index);
         return "CREATE " + (unique ? "UNIQUE " : "") + "INDEX " + name + " ON " + quote(db, schema) + "." + quote(db, table) + " (" + cols + ")";
     }
     /** 외래 키 추가문(부모 테이블이 대상에 이미 있을 때만 호출한다). */
@@ -70,21 +69,24 @@ public final class TableDdl {
         String lower = v.toLowerCase(Locale.ROOT);
         if (lower.matches("current_timestamp(\\(\\d*\\))?|now\\(\\)|sysdate|systimestamp|localtimestamp(\\(\\d*\\))?|current_date")) {
             if (type == DataType.datetime) return to == Dbms.mysql || to == Dbms.mariadb ? "CURRENT_TIMESTAMP(6)" : "CURRENT_TIMESTAMP";
+            if (type == DataType.date && to == Dbms.sqlserver) return "CAST(CURRENT_TIMESTAMP AS DATE)";
             if (type == DataType.date) return to == Dbms.mysql || to == Dbms.mariadb ? null : "CURRENT_DATE";
             return null;
         }
         if (type == DataType.bool && (lower.equals("true") || lower.equals("false") || lower.equals("0") || lower.equals("1") || lower.equals("'t'") || lower.equals("'f'"))) {
             boolean on = lower.equals("true") || lower.equals("1") || lower.equals("'t'");
-            return to == Dbms.oracle ? (on ? "1" : "0") : (on ? "TRUE" : "FALSE");
+            return (to == Dbms.oracle) || to == Dbms.sqlserver ? (on ? "1" : "0") : (on ? "TRUE" : "FALSE");
         }
         if (v.matches("-?\\d+(\\.\\d+)?")) return type == DataType.string ? "'" + v + "'" : (type == DataType.integer || type == DataType.decimal) ? v : null;
+        if (from == Dbms.sqlserver && v.matches("N'([^']|'')*'")) v = v.substring(1);
+        if (to == Dbms.sqlserver && type == DataType.string && v.matches("'([^']|'')*'")) return "N" + v;
         if (v.matches("'([^']|'')*'")) return type == DataType.string || type == DataType.date || type == DataType.datetime ? v.replace("\\", to == Dbms.mysql || to == Dbms.mariadb ? "\\\\" : "\\") : null;
         return null;
     }
 
     /** 적재 영수증 테이블(infra/jdbc/*-receipts.sql과 동일 구조). */
     public static String receiptsTable(Dbms db, String schema) {
-        String text = db == Dbms.oracle ? "VARCHAR2" : "VARCHAR";
+        String text = (db == Dbms.oracle) ? "VARCHAR2" : "VARCHAR";
         return "CREATE TABLE " + quote(db, schema) + "." + quote(db, "tableflow_load_receipts") + " (\n    request_id " + text + "(36) PRIMARY KEY,\n    payload_hash "
             + text + "(64) NOT NULL,\n    table_name " + text + "(128) NOT NULL,\n    inserted_rows INTEGER NOT NULL\n)" + (family(db) ? " ENGINE=InnoDB" : "");
     }
@@ -95,22 +97,23 @@ public final class TableDdl {
                 int n = c.size() > 0 ? c.size() : 255;
                 yield switch (db) {
                     case oracle -> { if (n > 4000) throw new IllegalArgumentException("Oracle VARCHAR2는 최대 4000자라 이 문자열 컬럼은 생성할 수 없습니다: " + c.name()); yield "VARCHAR2(" + n + " CHAR)"; }
+                    case sqlserver -> n > 4000 ? "NVARCHAR(MAX)" : "NVARCHAR(" + n + ")";
                     case postgresql -> n > 10_000_000 ? "TEXT" : "VARCHAR(" + n + ")";
                     default -> n > 16_000 ? "LONGTEXT" : "VARCHAR(" + n + ")";
                 };
             }
             case integer -> {
-                if (c.size() > 19) { int p = Math.min(c.size(), db == Dbms.oracle ? 38 : 65); yield decimal(db, p, 0); }
-                yield db == Dbms.oracle ? "NUMBER(19)" : "BIGINT";
+                if (c.size() > 19) { int p = Math.min(c.size(), (db == Dbms.oracle) || db == Dbms.sqlserver ? 38 : 65); yield decimal(db, p, 0); }
+                yield (db == Dbms.oracle) ? "NUMBER(19)" : "BIGINT";
             }
             case decimal -> {
-                int p = c.size() > 0 && c.size() <= (db == Dbms.oracle ? 38 : 65) ? c.size() : 38;
+                int p = c.size() > 0 && c.size() <= ((db == Dbms.oracle) || db == Dbms.sqlserver ? 38 : 65) ? c.size() : 38;
                 int s = c.scale() > 0 ? Math.min(c.scale(), p) : Math.min(10, p);
                 yield decimal(db, p, s);
             }
             case date -> "DATE";
-            case datetime -> switch (db) { case oracle, postgresql -> "TIMESTAMP(6)"; default -> "DATETIME(6)"; };
-            case bool -> switch (db) { case oracle -> "NUMBER(1)"; default -> "BOOLEAN"; };
+            case datetime -> switch (db) { case sqlserver -> "DATETIME2(6)"; case oracle, postgresql -> "TIMESTAMP(6)"; default -> "DATETIME(6)"; };
+            case bool -> switch (db) { case sqlserver -> "BIT"; case oracle -> "NUMBER(1)"; default -> "BOOLEAN"; };
         };
     }
     private static String decimal(Dbms db, int p, int s) {

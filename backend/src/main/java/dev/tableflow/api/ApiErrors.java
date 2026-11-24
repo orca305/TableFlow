@@ -34,7 +34,8 @@ public class ApiErrors {
         return error(400, "INVALID_INPUT", e.getMessage());
     }
     @ExceptionHandler({MethodArgumentNotValidException.class, HttpMessageNotReadableException.class,
-        MissingServletRequestParameterException.class, MissingServletRequestPartException.class})
+        MissingServletRequestParameterException.class, MissingServletRequestPartException.class,
+        org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class})
     ResponseEntity<?> malformed(Exception e) {
         for (Throwable cause = e; cause != null; cause = cause.getCause())
             if (cause instanceof JsonLimits.PayloadTooLarge) return error(413, "REQUEST_TOO_LARGE", "요청 크기는 최대 32MB입니다.");

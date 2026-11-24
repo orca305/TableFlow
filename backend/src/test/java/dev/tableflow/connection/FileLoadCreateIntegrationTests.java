@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class FileLoadCreateIntegrationTests {
     @Autowired JdbcExplorer explorer; @Autowired MigrationService migration; @Autowired JdbcLoader loader;
     Credentials credentials(Dbms db) {
-        int port=switch(db){case postgresql->15432;case mysql->13316;case mariadb->13317;case oracle->11521;};
+        int port=switch(db){case postgresql->15432;case mysql->13316;case mariadb->13317;case oracle->11521;default->throw new IllegalArgumentException("전용 테스트 DB가 없습니다.");};
         return new Credentials(db,"localhost",port,db==Dbms.oracle?"FREEPDB1":"tableflow","tableflow","TableFlowTest2026",false);
     }
     String schema(Dbms db){return db==Dbms.postgresql?"public":db==Dbms.oracle?"TABLEFLOW":"tableflow";}
@@ -40,7 +40,7 @@ class FileLoadCreateIntegrationTests {
     }
 
     @ParameterizedTest(name="pk {0}")
-    @EnumSource(Dbms.class)
+    @EnumSource(value=Dbms.class, names={"oracle","postgresql","mysql","mariadb"})
     void createsTableWithChosenPrimaryKeyAndRejectsDuplicates(Dbms db)throws Exception {
         var enabled=Arrays.asList(System.getenv().getOrDefault("TABLEFLOW_TEST_JDBC_DBMS","postgresql,mysql,mariadb").split(","));
         Assumptions.assumeTrue(enabled.contains(db.name()));
@@ -61,7 +61,7 @@ class FileLoadCreateIntegrationTests {
     }
 
     @ParameterizedTest(name="{0}")
-    @EnumSource(Dbms.class)
+    @EnumSource(value=Dbms.class, names={"oracle","postgresql","mysql","mariadb"})
     void createsTableThenLoadsAndRetriesIdempotently(Dbms db)throws Exception {
         var enabled=Arrays.asList(System.getenv().getOrDefault("TABLEFLOW_TEST_JDBC_DBMS","postgresql,mysql,mariadb").split(","));
         Assumptions.assumeTrue(enabled.contains(db.name()));

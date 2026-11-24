@@ -18,12 +18,12 @@ async function send(url: string, init: RequestInit): Promise<Response> {
 export class ApiError extends Error {
   constructor(message: string, public issues: Issue[] = [], public hint = "") { super(message); }
 }
-export async function request(path: string, body?: unknown, file = false, reviewed = false): Promise<Response> {
+export async function request(path: string, body?: unknown, file = false, reviewed = false, headers?: Record<string, string>): Promise<Response> {
   if (demoMode) throw new ApiError(demoMessage);
   let response: Response;
   try {
     response = await send(base + path, {
-      method: body === undefined ? "GET" : "POST", headers: body === undefined || file ? undefined : { "Content-Type": "application/json", "X-TableFlow-Reviewed": String(reviewed) },
+      method: body === undefined ? "GET" : "POST", headers: { ...(body === undefined || file ? {} : { "Content-Type": "application/json", "X-TableFlow-Reviewed": String(reviewed) }), ...headers },
       body: file ? body as FormData : JSON.stringify(body),
     });
   } catch { throw new ApiError("API에 연결할 수 없습니다. 백엔드 실행 상태를 확인한 뒤 다시 시도해주세요."); }

@@ -62,6 +62,7 @@ public class JdbcLoader {
                     st.setQueryTimeout(20); st.setString(1,requestId);st.setString(2,hash);st.setString(3,name);st.setInt(4,output.rows().size());st.executeUpdate();
                 }
                 var columns=included(output);
+                if (c.dbms() == Dbms.sqlserver && !keepIdentity.isEmpty()) identityInsert(connection, c.dbms(), schema, name, true);
                 String names=String.join(",",columns.stream().map(col->quote(c.dbms(),col.targetName())).toList());
                 String override=c.dbms()==Dbms.postgresql && !keepIdentity.isEmpty() ? " OVERRIDING SYSTEM VALUE" : ""; // GENERATED ALWAYS identity도 원본 값 허용
                 String sql="INSERT INTO "+qualified(c.dbms(),schema,name)+" ("+names+")"+override+" VALUES ("+String.join(",",Collections.nCopies(columns.size(),"?"))+")";
@@ -73,6 +74,7 @@ public class JdbcLoader {
                     }
                     if(batch%250!=0) execute(st,deadline);
                 }
+                if (c.dbms() == Dbms.sqlserver && !keepIdentity.isEmpty()) identityInsert(connection, c.dbms(), schema, name, false);
                 committing=true; connection.commit();
                 return new DatabaseLoader.Result(requestId,name,output.rows().size(),false);
             } catch(SQLException e) {
@@ -88,13 +90,17 @@ public class JdbcLoader {
     private void settings(Connection c,Dbms db,String schema,String table) throws SQLException {
         try(var st=c.createStatement()) {
             st.setQueryTimeout(20);
-            if(family(db)) {
+            if (db == Dbms.sqlserver) {
+                st.execute("SET XACT_ABORT ON"); st.execute("SET LOCK_TIMEOUT 10000");
+                for (String target : List.of(table, RECEIPTS))
+                    try (var rs = st.executeQuery("SELECT TOP (1) 1 FROM " + qualified(db, schema, target) + " WITH (TABLOCKX, HOLDLOCK)")) { while (rs.next()) {} }
+            } else if(family(db)) {
                 st.execute("SET SESSION sql_mode='STRICT_ALL_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
                 st.execute("SET SESSION innodb_lock_wait_timeout=10"); st.execute("SET SESSION lock_wait_timeout=10");
                 for(String target:List.of(table,RECEIPTS)) try(var rs=st.executeQuery("SELECT 1 FROM "+qualified(db,schema,target)+" LIMIT 0")){}
             } else {
                 if(db==Dbms.postgresql) {st.execute("SET LOCAL statement_timeout='20s'");st.execute("SET LOCAL lock_timeout='10s'");}
-                for(String target:List.of(table,RECEIPTS)) st.execute("LOCK TABLE "+qualified(db,schema,target)+ (db==Dbms.oracle ? " IN ROW EXCLUSIVE MODE WAIT 10" : " IN ROW EXCLUSIVE MODE"));
+                for(String target:List.of(table,RECEIPTS)) st.execute("LOCK TABLE "+qualified(db,schema,target)+ ((db==Dbms.oracle) ? " IN ROW EXCLUSIVE MODE WAIT 10" : " IN ROW EXCLUSIVE MODE"));
             }
         }
     }
@@ -107,17 +113,24 @@ public class JdbcLoader {
         }
         var meta=c.getMetaData(); String escape=meta.getSearchStringEscape();
         for(String target:List.of(name,RECEIPTS)) {
-            try(var rows=meta.getTables(null,pattern(schema,escape),pattern(target,escape),new String[]{"TABLE"})) {
+            try(var rows=meta.getTables(null,JdbcExplorer.literalPattern(meta,schema),JdbcExplorer.literalPattern(meta,target),new String[]{"TABLE"})) {
                 if(!rows.next()) throw schema("대상 테이블과 tableflow_load_receipts 테이블을 먼저 준비해주세요.");
             }
         }
-        String triggerSql=db==Dbms.oracle ? "SELECT COUNT(*) FROM ALL_TRIGGERS WHERE TABLE_OWNER=? AND TABLE_NAME IN (?,?) AND STATUS='ENABLED'"
+        if (db == Dbms.sqlserver) {
+            try (var st = c.prepareStatement("SELECT HAS_PERMS_BY_NAME(?, 'SCHEMA', 'VIEW DEFINITION')")) {
+                st.setQueryTimeout(20); st.setString(1, schema);
+                try (var rs = st.executeQuery()) { if (!rs.next() || rs.getInt(1) != 1) throw schema("SQL Server 대상 스키마의 VIEW DEFINITION 권한이 필요합니다. 트리거 여부를 확인해야 합니다."); }
+            }
+        }
+        String triggerSql=db==Dbms.sqlserver ? "SELECT COUNT(*) FROM sys.triggers t JOIN sys.tables c ON c.object_id=t.parent_id JOIN sys.schemas s ON s.schema_id=c.schema_id WHERE s.name=? AND c.name IN (?,?) AND t.is_disabled=0"
+            : (db==Dbms.oracle) ? "SELECT COUNT(*) FROM ALL_TRIGGERS WHERE TABLE_OWNER=? AND TABLE_NAME IN (?,?) AND STATUS='ENABLED'"
             : "SELECT COUNT(*) FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=? AND c.relname IN (?,?) AND NOT t.tgisinternal";
         try(var st=c.prepareStatement(triggerSql)) { st.setQueryTimeout(20);st.setString(1,schema);st.setString(2,name);st.setString(3,RECEIPTS);try(var rs=st.executeQuery()){rs.next();if(rs.getInt(1)>0)throw schema("사용자 트리거가 있는 대상·영수증 테이블은 지원하지 않습니다.");}}
         Set<String> pk=new HashSet<>();try(var rs=meta.getPrimaryKeys(null,schema,RECEIPTS)){while(rs.next())pk.add(rs.getString("COLUMN_NAME").toLowerCase(Locale.ROOT));}
         if(!pk.equals(Set.of("request_id")))throw schema("영수증 테이블의 request_id 단일 기본 키를 확인해주세요.");
         Map<String,Column> mapped=new HashMap<>();included(table).forEach(col->mapped.put(col.targetName(),col)); Set<String> found=new HashSet<>();
-        try(var rs=meta.getColumns(null,pattern(schema,escape),pattern(name,escape),"%")) {
+        try(var rs=meta.getColumns(null,JdbcExplorer.literalPattern(meta,schema),JdbcExplorer.literalPattern(meta,name),"%")) {
             while(rs.next()) {
                 // Oracle의 COLUMN_DEF는 LONG이라 ResultSet 컬럼 순서대로 읽어야 한다(순서가 바뀌면 ORA-17027).
                 String target=rs.getString("COLUMN_NAME");Column col=mapped.get(target);
@@ -131,7 +144,7 @@ public class JdbcLoader {
                 for(var row:table.rows()) {
                     String value=row.cells().get(col.id()).value();
                     if(value==null){if(required)throw schema("대상 DB 필수값이 비어 있습니다: "+target);continue;}
-                    if(col.dataType()==DataType.string && size>0 && value.codePointCount(0,value.length())>size)throw schema("대상 DB 문자열 길이를 초과했습니다: "+target);
+                    if(col.dataType()==DataType.string && size>0 && (db == Dbms.sqlserver ? value.length() : value.codePointCount(0,value.length()))>size)throw schema("대상 DB 문자열 길이를 초과했습니다: "+target);
                     if(col.dataType()==DataType.string && db==Dbms.postgresql && value.indexOf(0)>=0)throw schema("PostgreSQL 문자열에는 NUL 문자를 저장할 수 없습니다.");
                     if((col.dataType()==DataType.integer || col.dataType()==DataType.decimal) && (type==Types.NUMERIC || type==Types.DECIMAL) && size>0 && scale>=0) {
                         var n=new BigDecimal(value).stripTrailingZeros();int integral=n.signum()==0?0:Math.max(0,n.precision()-n.scale());
@@ -148,10 +161,15 @@ public class JdbcLoader {
             case string -> Set.of(Types.CHAR,Types.VARCHAR,Types.NCHAR,Types.NVARCHAR,Types.LONGVARCHAR,Types.LONGNVARCHAR).contains(target);
             case integer -> Set.of(Types.TINYINT,Types.SMALLINT,Types.INTEGER,Types.BIGINT,Types.NUMERIC,Types.DECIMAL).contains(target);
             case decimal -> target==Types.NUMERIC || target==Types.DECIMAL;
-            case date -> target==Types.DATE || (db==Dbms.oracle && target==Types.TIMESTAMP);
+            case date -> target==Types.DATE || ((db==Dbms.oracle) && target==Types.TIMESTAMP);
             case datetime -> target==Types.TIMESTAMP;
-            case bool -> target==Types.BOOLEAN || target==Types.BIT || (db==Dbms.oracle && (target==Types.NUMERIC || target==Types.DECIMAL));
+            case bool -> target==Types.BOOLEAN || target==Types.BIT || ((db==Dbms.oracle) && (target==Types.NUMERIC || target==Types.DECIMAL));
         };
+    }
+    private void identityInsert(Connection connection, Dbms db, String schema, String name, boolean enabled) throws SQLException {
+        try (var st = connection.createStatement()) {
+            st.setQueryTimeout(20); st.execute("SET IDENTITY_INSERT " + qualified(db, schema, name) + (enabled ? " ON" : " OFF"));
+        }
     }
     private DatabaseLoader.Result receipt(Connection c,Dbms db,String schema,String id,String hash)throws SQLException {
         try(var st=c.prepareStatement("SELECT payload_hash,table_name,inserted_rows FROM "+qualified(db,schema,RECEIPTS)+" WHERE request_id=?")) {
@@ -162,8 +180,8 @@ public class JdbcLoader {
         }
     }
     private void bind(PreparedStatement st,int i,String value,DataType type,Dbms db)throws SQLException {
-        if(value==null){st.setNull(i,switch(type){case string->Types.VARCHAR;case integer,decimal->Types.NUMERIC;case date->Types.DATE;case datetime->Types.TIMESTAMP;case bool->db==Dbms.oracle?Types.NUMERIC:Types.BOOLEAN;});return;}
-        switch(type){case string->st.setString(i,value);case integer,decimal->st.setBigDecimal(i,new BigDecimal(value));case date->st.setDate(i,java.sql.Date.valueOf(value));case datetime->st.setTimestamp(i,Timestamp.valueOf(java.time.LocalDateTime.parse(value)));case bool->{if(db==Dbms.oracle)st.setInt(i,value.equals("true")?1:0);else st.setBoolean(i,value.equals("true"));}}
+        if(value==null){st.setNull(i,switch(type){case string->Types.VARCHAR;case integer,decimal->Types.NUMERIC;case date->Types.DATE;case datetime->Types.TIMESTAMP;case bool->(db==Dbms.oracle)?Types.NUMERIC:Types.BOOLEAN;});return;}
+        switch(type){case string->st.setString(i,value);case integer,decimal->st.setBigDecimal(i,new BigDecimal(value));case date->st.setDate(i,java.sql.Date.valueOf(value));case datetime->st.setTimestamp(i,Timestamp.valueOf(java.time.LocalDateTime.parse(value)));case bool->{if((db==Dbms.oracle))st.setInt(i,value.equals("true")?1:0);else st.setBoolean(i,value.equals("true"));}}
     }
     private void execute(PreparedStatement st,long deadline)throws SQLException {
         long remaining=deadline-System.nanoTime();if(remaining<=0)throw new LoadFailure(503,"LOAD_TIMEOUT","제한 시간을 초과하여 전체 적재를 취소했습니다.");
@@ -178,8 +196,8 @@ public class JdbcLoader {
         }catch(Exception e){throw new IllegalStateException("Unable to fingerprint load");}
     }
     private List<Column> included(Table t){return t.columns().stream().filter(Column::included).toList();}
-    private static boolean family(Dbms db){return db==Dbms.mysql || db==Dbms.mariadb;}
-    private static String quote(Dbms db,String name){String q=family(db)?"`":"\"";return q+name.replace(q,q+q)+q;}
+    private static boolean family(Dbms db){return dev.tableflow.connection.SqlDialect.catalogBased(db);}
+    private static String quote(Dbms db,String name){return dev.tableflow.connection.SqlDialect.quote(db,name);}
     private static String qualified(Dbms db,String schema,String name){return quote(db,schema)+"."+quote(db,name);}
     private static String pattern(String name,String escape){return name.replace(escape,escape+escape).replace("_",escape+"_").replace("%",escape+"%");}
     private LoadFailure schema(String message){return new LoadFailure(422,"LOAD_SCHEMA",message);}

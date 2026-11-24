@@ -34,7 +34,7 @@ public class ConnectionController {
     public record BrowseRequest(@NotNull @Valid Credentials connection, @Size(max=128) String schema, @Size(max=128) String table) {
         @Override public String toString() { return "BrowseRequest[redacted]"; }
     }
-    @GetMapping("/drivers") public Object drivers() { var registry=explorer.registry(); return java.util.Map.of("enabled",registry.enabled(),"drivers",registry.drivers(),"loadEnabled",loader.enabled(),
+    @GetMapping("/drivers") public Object drivers() { var registry=explorer.registry(); return java.util.Map.of("enabled",registry.enabled(),"drivers",registry.drivers(),"installedDrivers",explorer.installedDrivers(),"loadEnabled",loader.enabled(),
         "savedEnabled",store.enabled(),"savePasswordEnabled",store.passwordAllowed(),"defaultChunkSize",migration.defaultChunkSize()); }
     public record SaveRequest(@NotBlank @Size(max=60) String name, @NotNull @Valid Credentials connection, boolean savePassword) {
         @Override public String toString(){return "SaveRequest[redacted]";}
@@ -89,10 +89,10 @@ public class ConnectionController {
         }
         static Credentials strip(Credentials c,dev.tableflow.connection.ConnectionStore store){
             String id=c.savedId()!=null?c.savedId():store.findSavedId(c);
-            return new Credentials(c.dbms(),c.host(),c.port(),c.database(),c.username(),"",c.tls(),id);
+            return new Credentials(c.dbms(),c.host(),c.port(),c.database(),c.username(),"",c.tls(),id,c.driverId());
         }
         static Credentials withPassword(Credentials c,String password){
-            return new Credentials(c.dbms(),c.host(),c.port(),c.database(),c.username(),password==null?"":password,c.tls(),c.savedId());
+            return new Credentials(c.dbms(),c.host(),c.port(),c.database(),c.username(),password==null?"":password,c.tls(),c.savedId(),c.driverId());
         }
         /** 스케줄 실행용 사본: 새 요청 ID, 동의 완료, 이관 행 수 상한은 최대로(원본이 늘어도 막히지 않게). */
         MigrateRequest forRun(String id){

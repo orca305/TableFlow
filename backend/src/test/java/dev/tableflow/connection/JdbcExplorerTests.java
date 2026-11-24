@@ -11,8 +11,8 @@ class JdbcExplorerTests {
     Credentials credentials(Dbms db) { return new Credentials(db, "localhost", db.port, "sample", "reader", "secret-never-echo", true); }
     @Test void fixedDriversAndSecurePropertiesAreAvailable() {
         var explorer = new JdbcExplorer(true, "localhost");
-        assertEquals(4, explorer.registry().drivers().size());
-        assertTrue(explorer.registry().drivers().stream().allMatch(DriverInfo::available));
+        assertEquals(5, explorer.registry().drivers().size());
+        assertTrue(explorer.registry().drivers().stream().filter(d -> java.util.Set.of(Dbms.oracle,Dbms.postgresql,Dbms.mysql,Dbms.mariadb).contains(d.dbms())).allMatch(DriverInfo::available));
         for (Dbms db : Dbms.values()) {
             var c = credentials(db);
             assertFalse(explorer.url(c).contains(c.password()));

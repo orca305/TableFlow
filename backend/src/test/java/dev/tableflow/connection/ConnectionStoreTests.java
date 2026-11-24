@@ -63,6 +63,19 @@ class ConnectionStoreTests {
         assertThrows(IllegalArgumentException.class, () -> store.save("신규", creds("localhost", "tableflow", ""), true));
     }
 
+    @Test void changingDriverRequiresPasswordAgainAndPersistsSelection() {
+        var store = store(true);
+        var original = creds("localhost", "tableflow", "pw");
+        var saved = store.save("PG", original, true);
+        String driver = java.util.UUID.randomUUID().toString();
+        var changed = new Credentials(original.dbms(), original.host(), original.port(), original.database(), original.username(), "", original.tls(), saved.id(), driver);
+        assertEquals("CONNECTION_MISMATCH", code(() -> store.passwordFor(changed)));
+        assertThrows(IllegalArgumentException.class, () -> store.save("PG", changed, true));
+        var entered = new Credentials(original.dbms(), original.host(), original.port(), original.database(), original.username(), "new-pw", original.tls(), saved.id(), driver);
+        assertEquals(driver, store.save("PG", entered, true).driverId());
+        assertEquals("new-pw", store.passwordFor(changed));
+    }
+
     @Test void ciphertextMovedToAnotherEntryCannotBeDecrypted() throws Exception {
         var store = store(true);
         var a = store.save("A", creds("localhost", "ua", "pw-a"), true);

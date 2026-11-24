@@ -2,13 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { DBMS_LABEL, deleteSavedConnection, type SavedConnection, type ServerInfo } from "@/lib/connections";
+import DriverSettings from "./DriverSettings";
 import { Help } from "./ui";
 
 /**
  * DB 조회·적재·연결 저장은 서버 환경변수로 켜고 끄는 기능이라 이 화면에서 바꿀 수 없다(안전을 위해 기본값은 비활성화).
  * 여기서는 현재 상태와 활성화 방법을 보여주고, 브라우저별 기본 분할 이관 단위와 저장된 연결 관리를 제공한다.
  */
-export default function SettingsPage({ server, error, saved, reloadSaved }: { server: ServerInfo | null; error: string; saved: SavedConnection[]; reloadSaved: () => void }) {
+export default function SettingsPage({ server, error, saved, reloadSaved, visible = true }: { server: ServerInfo | null; error: string; saved: SavedConnection[]; reloadSaved: () => void; visible?: boolean }) {
   const [chunk, setChunk] = useState("");
   const [message, setMessage] = useState("");
   useEffect(() => {
@@ -29,6 +30,7 @@ export default function SettingsPage({ server, error, saved, reloadSaved }: { se
       <div className="sw"><div><b>연결 저장</b><p>연결 정보(주소·포트·DB·사용자)를 이 컴퓨터의 서버에 저장합니다 (TABLEFLOW_CONNECTIONS_ENABLED)</p></div><div className="val">{state(server?.savedEnabled, "TABLEFLOW_CONNECTIONS_ENABLED=true")}</div></div>
       <div className="sw"><div><b>비밀번호 저장</b><p>사용자가 선택한 연결의 비밀번호만 AES-256으로 암호화해 서버에 저장합니다. 브라우저로는 내려보내지 않습니다 (TABLEFLOW_CONNECTIONS_SAVE_PASSWORD)</p></div><div className="val">{state(server?.savePasswordEnabled, "TABLEFLOW_CONNECTIONS_SAVE_PASSWORD=true")}</div></div>
     </section>
+    {visible && <DriverSettings />}
     <section className="panel" aria-label="분할 이관 단위"><h2>분할 이관 단위<Help text="대용량 테이블을 나누어 이관하는 단위입니다. 작을수록 중단 시 재작업 범위가 줄어듭니다. 이 브라우저의 기본값이며 이관마다 바꿀 수 있습니다." /></h2>
       <div className="row"><select aria-label="기본 분할 이관 단위" style={{ maxWidth: 160 }} value={chunk} onChange={e => changeChunk(e.target.value)}>
         {[...new Set([1000, 2500, 5000, 10000, Number(chunk)].filter(Boolean))].sort((a, b) => a - b).map(n => <option key={n} value={n}>{n.toLocaleString("ko-KR")}행</option>)}</select>

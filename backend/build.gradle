@@ -26,5 +26,10 @@ dependencies {
 }
 tasks.named('test') {
     useJUnitPlatform()
+    def integrationFlags = ['TABLEFLOW_TEST_JDBC', 'TABLEFLOW_TEST_SQLSERVER', 'TABLEFLOW_TEST_MYSQL']
+    integrationFlags.each { flag -> inputs.property(flag, System.getenv(flag) ?: 'false') }
+    inputs.property('TABLEFLOW_TEST_JDBC_DBMS', System.getenv('TABLEFLOW_TEST_JDBC_DBMS') ?: '')
+    // 외부 DB 상태는 Gradle 입력 파일에 포함되지 않는다. 실제 DB 검증은 이전 결과를 재사용하지 않는다.
+    outputs.upToDateWhen { !integrationFlags.any { System.getenv(it) == 'true' } }
     systemProperty 'tableflow.history.file', "${buildDir}/tmp/test-history.jsonl" // 테스트가 data/ 이력을 오염시키지 않도록
 }

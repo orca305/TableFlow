@@ -421,9 +421,8 @@ public class MigrationService {
     }
     /** {최대 길이, 한도를 넘는 행 수}. 시간이 오래 걸리거나 실패하면 null(판정은 경고로 낮춘다). */
     private long[] lengthStats(Credentials source, String schema, String table, String column, int limit) {
-        String fn = source.dbms() == Dbms.mysql || source.dbms() == Dbms.mariadb ? "CHAR_LENGTH" : "LENGTH";
-        String c = JdbcReader.quote(source.dbms(), column);
-        String sql = "SELECT MAX(" + fn + "(" + c + ")), SUM(CASE WHEN " + fn + "(" + c + ") > " + limit + " THEN 1 ELSE 0 END) FROM "
+        String length = dev.tableflow.connection.SqlDialect.lengthExpression(source.dbms(), JdbcReader.quote(source.dbms(), column));
+        String sql = "SELECT MAX(" + length + "), SUM(CASE WHEN " + length + " > " + limit + " THEN 1 ELSE 0 END) FROM "
             + JdbcReader.quote(source.dbms(), schema) + "." + JdbcReader.quote(source.dbms(), table);
         try {
             return explorer.withConnection(source, true, connection -> {
@@ -481,7 +480,7 @@ public class MigrationService {
         });
     }
     private boolean exists(Connection c, Dbms db, String schema, String name) throws SQLException {
-        var meta = c.getMetaData(); boolean catalog = db == Dbms.mysql || db == Dbms.mariadb;
+        var meta = c.getMetaData(); boolean catalog = dev.tableflow.connection.SqlDialect.catalogBased(db);
         try (var rs = meta.getTables(catalog ? schema : null, catalog ? null : JdbcExplorer.literalPattern(meta, schema), JdbcExplorer.literalPattern(meta, name), new String[]{"TABLE"})) {
             while (rs.next()) if (name.equals(rs.getString("TABLE_NAME"))) return true;
         }
@@ -490,7 +489,7 @@ public class MigrationService {
     /** 외래 키 설명(최대 20개). 대상에서는 부모 행이 없으면 DB가 거부해 전체 롤백된다. */
     private List<String> foreignKeys(Credentials c, String schema, String table) {
         return explorer.withConnection(c, true, connection -> {
-            var meta = connection.getMetaData(); boolean catalog = c.dbms() == Dbms.mysql || c.dbms() == Dbms.mariadb;
+            var meta = connection.getMetaData(); boolean catalog = dev.tableflow.connection.SqlDialect.catalogBased(c.dbms());
             List<String> result = new ArrayList<>();
             try (var rs = meta.getImportedKeys(catalog ? schema : null, catalog ? null : schema, table)) {
                 while (rs.next() && result.size() < 20) {
@@ -608,7 +607,7 @@ public class MigrationService {
             if (!keepIdentity.isEmpty()) {
                 if (target.dbms() == Dbms.oracle) rejectAlwaysIdentity(target, targetSchema, targetTable, keepIdentity);
                 notes.add("자동 증가 컬럼 " + String.join(", ", keepIdentity) + "에 원본 값을 그대로 넣고, 적재 후 "
-                    + (target.dbms() == Dbms.mysql || target.dbms() == Dbms.mariadb ? "AUTO_INCREMENT는 DB가 최댓값 다음으로 자동 갱신합니다." : "다음 번호가 최댓값 다음이 되도록 시퀀스를 재동기화합니다."));
+                    + (target.dbms() == Dbms.mysql || target.dbms() == Dbms.mariadb || target.dbms() == Dbms.sqlserver ? "자동 증가 번호는 DB가 적재한 최댓값에 맞춰 자동 갱신합니다." : "다음 번호가 최댓값 다음이 되도록 시퀀스를 재동기화합니다."));
             }
             for (var info : targetColumns.values())
                 if (info.autoIncrement() && !mappedTargets.contains(info.name()))
@@ -730,6 +729,7 @@ public class MigrationService {
     private List<String> resync(Credentials target, String schema, String table, Set<String> columns) {
         if (columns.isEmpty()) return List.of();
         Dbms db = target.dbms();
+        if (db == Dbms.sqlserver) return List.of("IDENTITY_INSERT로 입력한 값이 현재 번호보다 크면 SQL Server가 자동으로 다음 번호를 갱신합니다.");
         if (db == Dbms.mysql || db == Dbms.mariadb) return List.of("AUTO_INCREMENT는 DB가 최댓값 다음으로 자동 갱신했습니다.");
         List<String> notes = new ArrayList<>();
         for (String column : columns) {
