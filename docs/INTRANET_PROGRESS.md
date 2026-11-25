@@ -1,6 +1,6 @@
 # 내부망 설치형 전환 진행 기록
 
-기준: 2026-11-25. **사용자 요청에 따라 이번 변경은 공통 JDBC 기반·드라이버 반입·SQL Server Developer까지다. Tibero/CUBRID는 보류했으며 제품 코드·테스트·배포 설정에서 제외했다.** 12단계 전체 완료를 의미하지 않는다.
+기준: 2026-11-25. SQL Server까지 반영한 뒤 사용자가 Tibero/CUBRID 개발을 재개하도록 요청했다. 최신 구현·검증·제한은 [DBMS 확장 검증](DBMS_EXPANSION.md)을 따른다. 아래 SQL Server 절은 해당 단계의 기록이며 12단계 전체 완료를 의미하지 않는다.
 
 ## 반영 범위
 
@@ -62,7 +62,7 @@ SQL Server 실서버 테스트 4개 통과:
 
 ## 중단 범위
 
-Tibero/CUBRID와 6~12단계(오프라인 실행·상태 PostgreSQL·RabbitMQ/Java 워커·Celery OCR·인증/감사·OS 설치 패키지·ETL 보강)는 이번 작업에 포함하지 않는다. 사용자 재개 요청 전에는 진행하지 않는다.
+SQL Server 단계 당시 Tibero/CUBRID는 보류했으나, 후속 사용자 요청으로 두 DB의 개발을 재개했다. 6~12단계(오프라인 실행·상태 PostgreSQL·RabbitMQ/Java 워커·Celery OCR·인증/감사·OS 설치 패키지·ETL 보강)는 아직 진행하지 않았다.
 
 ### 최종 실행 결과 (SQL Server 범위 제한 후)
 

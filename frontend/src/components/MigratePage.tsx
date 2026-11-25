@@ -42,7 +42,7 @@ function dataType(jdbcType = 12): DataType {
 function newColumnName(dbms: Dbms, name: string): string {
   let clean = name.normalize("NFKD").replace(/[^A-Za-z0-9_]/g, "_").replace(/^_+|_+$/g, "") || "COL";
   if (/^[0-9]/.test(clean)) clean = "C_" + clean;
-  return dbms === "postgresql" ? clean.toLowerCase() : dbms === "oracle" ? clean.toUpperCase() : clean;
+  return dbms === "postgresql" || dbms === "cubrid" ? clean.toLowerCase() : (dbms === "oracle" || dbms === "tibero") ? clean.toUpperCase() : clean;
 }
 const fmt = (n: number) => n.toLocaleString("ko-KR");
 const SIZED = new Set([1, 12, -9, -15, 2, 3]); // 길이·정밀도를 보여줄 문자/숫자 타입(날짜 등은 DB가 돌려주는 크기가 의미 없다)
@@ -80,6 +80,8 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
 
   const targetTable = mode === "new" ? newName.trim() : dst?.table ?? "";
   const targetDbms = dstV?.connection.dbms ?? "postgresql";
+  const supportsIdentity = server?.drivers.find(d => d.dbms === targetDbms)?.capabilities?.preserveKeys !== false;
+  const effectiveKeys = preserveKeys && supportsIdentity;
   const mappings = useMemo(() => Object.entries(mapping).filter(([, to]) => to).map(([from, to]) => ({ source: from, target: to, ...(mode === "new" ? ov[from] : {}), ...(rules[from]?.length ? { steps: rules[from] } : {}) })), [mapping, ov, mode, rules]);
   const duplicated = useMemo(() => { const seen = new Set<string>(); const dup = new Set<string>(); mappings.forEach(m => { const k = m.target.toLowerCase(); if (seen.has(k)) dup.add(k); seen.add(k); }); return dup; }, [mappings]);
   const filtered = where.trim() !== "";
@@ -95,7 +97,7 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
   const working = busy || jobActive;
 
   const body = () => ({ source: srcV!.connection, sourceSchema: src!.schema, sourceTable: src!.table, target: dstV!.connection, targetSchema: mode === "new" ? dstSchema : dst!.schema,
-    targetTable, mappings, limit: Math.max(1, total), createTable: mode === "new", preserveKeys,
+    targetTable, mappings, limit: Math.max(1, total), createTable: mode === "new", preserveKeys: effectiveKeys,
     copyIndexes: mode === "new" && copyIdx, copyDefaults: mode === "new" && copyDef, copyForeignKeys: mode === "new" && copyFk, chunkSize: bulk && chunkValid ? chunk : undefined, where: filtered ? where.trim() : undefined });
   function resetRun() { setVerify(null); setVerifyError(""); setPlan(null); setConfirmed(false); setRequestId(""); setDone(null); setJob(null); setError(""); setNotice(""); }
   async function run(action: () => Promise<void>) {
@@ -149,7 +151,7 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
     }, 350);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dstOk, mappings, preserveKeys, mode, targetTable, copyIdx, copyDef, copyFk]);
+  }, [dstOk, mappings, preserveKeys, supportsIdentity, mode, targetTable, copyIdx, copyDef, copyFk]);
   useEffect(() => { // 원본 데이터 미리보기(샘플 200행)
     if (!srcOk || !src || !srcV) return;
     const columns = src.columns.filter(c => !UNSUPPORTED.has(c.jdbcType ?? 12)).map(c => c.name);
@@ -215,7 +217,7 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
       <button type="button" className="node" aria-pressed={active === "map"} disabled={!srcOk || !dstOk} data-tip="원본 컬럼이 들어갈 대상 컬럼을 확인하고 데이터 오류를 검증합니다. 원본과 대상을 먼저 선택하세요." onClick={() => setActive("map")}>
         <small>3 · 검토 <span className="edit">열기</span></small>
         <h3>{analysis ? `매핑 ${analysis.columns.length}건 · 검증 오류 ${errors}건` : srcOk && dstOk ? "분석 중" : "선택 전"}</h3>
-        <div className="chips">{analysis ? <><span className="chip">경고 {warns}건</span>{preserveKeys && <span className="chip">기본 키 유지</span>}</> : <span className="chip">원본과 대상 확정 후</span>}</div></button>
+        <div className="chips">{analysis ? <><span className="chip">경고 {warns}건</span>{effectiveKeys && <span className="chip">기본 키 유지</span>}</> : <span className="chip">원본과 대상 확정 후</span>}</div></button>
     </div>
 
     <div role="region" hidden={active !== "src"} className="panel" aria-label="원본 선택"><h2>원본 선택<span className="hs">이관할 데이터가 있는 DB와 테이블을 선택하세요</span></h2>
@@ -254,7 +256,8 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
           <input aria-label="신규 테이블 이름" value={newName} maxLength={64} disabled={mode !== "new" || working} placeholder={src ? src.table : "예: TB_EMPLOYEE"} onChange={e => { setNewName(e.target.value); setDstOk(false); }} />
           <div className="ol"><input type="radio" name="dst-mode" id="dst-old" checked={mode === "existing"} onChange={() => { setMode("existing"); setDstOk(false); resetRun(); }} /><label htmlFor="dst-old">기존 테이블에 적재</label><Help text="이미 있는 테이블에 행을 추가합니다. 컬럼 구조가 맞아야 합니다." /></div>
           <span className="mut">{mode === "existing" ? "위에서 대상 테이블을 선택하세요" : "기존 테이블에 적재하려면 선택하세요"}</span>
-          <div className="ol span"><input type="checkbox" id="keep-keys" checked={preserveKeys} disabled={working} onChange={e => { setPreserveKeys(e.target.checked); setDstOk(false); }} /><label htmlFor="keep-keys">원본 기본 키(PK) 유지</label><Help text="기본 키는 행을 구분하는 고유 번호입니다. 선택하면 자동 증가 대상 컬럼에도 원본 값을 그대로 넣고, 적재 후 시퀀스를 최댓값 다음으로 맞춥니다." /></div>
+          {!supportsIdentity && <p className="mut" style={{ gridColumn: "1 / -1" }}>이 대상 DB는 기존 자동 증가 컬럼의 원본 값 지정을 지원하지 않습니다. 신규 일반 컬럼에는 원본 키 값을 이관할 수 있습니다.</p>}
+          <div className="ol span"><input type="checkbox" id="keep-keys" checked={effectiveKeys} disabled={working || !supportsIdentity} onChange={e => { setPreserveKeys(e.target.checked); setDstOk(false); }} /><label htmlFor="keep-keys">원본 기본 키(PK) 유지</label><Help text="기본 키는 행을 구분하는 고유 번호입니다. 선택하면 자동 증가 대상 컬럼에도 원본 값을 그대로 넣고, 적재 후 시퀀스를 최댓값 다음으로 맞춥니다." /></div>
         </div>
         {mode === "new" && <div className="split"><div className="sp-h">함께 복제할 항목<Help text="신규 테이블을 만들 때 원본의 구조를 함께 가져옵니다. 기본값은 숫자·문자·불리언·현재 시각만 옮기고, 시퀀스·함수는 복제하지 않습니다. FK는 부모 테이블이 대상에 이미 있어야 만들 수 있습니다." /></div>
           <div className="row">

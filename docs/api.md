@@ -161,3 +161,19 @@ Credentials: `{dbms:oracle|postgresql|mysql|mariadb,host,port,database,username,
 - 비밀번호를 저장한 연결의 driverId를 바꾸면 기존 암호를 사용할 수 없으며 다시 입력해야 함.
 
 운영 인증/역할 기반 권한은 후속 단계다. 현재 관리 키 기능을 내부 서버 인증 완료로 집계하지 않는다. 자세한 실행과 검증 상태는 [INTRANET_PROGRESS.md](INTRANET_PROGRESS.md) 참조.
+
+
+## Tibero/CUBRID JDBC 확장 (2026-11-25 후속)
+
+- `Credentials.dbms`에 `tibero`, `cubrid` 추가. 모두 정식 공급자 JAR를 관리자 반입하고 `driverId`를 선택하는 방식이다.
+- 기본 포트: Tibero 8629, CUBRID broker 33000. 사용자·비밀번호를 URL에 넣지 않는다.
+- `TABLEFLOW_TIBERO_ENABLED=false`: 실제 공급자 JAR/서버 미검증으로 기본 차단. 명시적 활성화 없이는 `JDBC_EXPERIMENTAL_DISABLED`.
+- `TABLEFLOW_CUBRID_ENABLED=true`: 전역 JDBC 조회/적재 opt-in 설정은 그대로 적용된다.
+- `/connections/drivers`의 `capabilities.verifiedTls` 추가. 기존 5종은 true, 두 확장 어댑터는 false. TableFlow 어댑터의 인증서 검증 지원 여부이며 DBMS 자체의 TLS 기능 유무를 뜻하지 않는다.
+- Tibero/CUBRID의 `tls=true` 요청은 `JDBC_TLS_UNVERIFIED`, `tls=false` 원격 요청은 기존 `JDBC_TLS_REQUIRED`로 거부한다. 현재는 루프백 DB 테스트 연결만 지원한다.
+- 두 어댑터의 `capabilities.preserveKeys=false`: 기존 자동 증가 컬럼에 원본 값을 지정하는 기능은 화면/서버 모두 제한한다. 신규 일반 컬럼의 PK 값 적재는 지원한다.
+- CUBRID 신규 테이블/컬럼 이름은 소문자로 지정한다. 자동 매핑/일괄 이관은 소문자로 변환하며 명시적인 대문자 신규 DDL 요청은 거부한다.
+- 조회/이관/사전 점검/분할 재개 API 경로는 기존과 같다. CUBRID 소유자 이름을 schema로 전달하고 타입/정밀도/제약 실패는 적재를 롤백한다.
+- 임의 SQL이나 드라이버 다운로드 API를 추가하지 않았다. SQL 파일 내보내기 방언은 기존 4종을 유지한다.
+
+검증 범위와 재현 방법: [DBMS_EXPANSION.md](DBMS_EXPANSION.md). Tibero 단위 검증과 CUBRID 실제 DB 검증을 구분한다.

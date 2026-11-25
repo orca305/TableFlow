@@ -85,7 +85,7 @@ public class JdbcReader {
     private List<String> primaryKey(Connection connection, Dbms dbms, String schema, String table) throws SQLException {
         boolean catalogBased = SqlDialect.catalogBased(dbms);
         Map<Integer, String> keys = new TreeMap<>();
-        try (var rows = connection.getMetaData().getPrimaryKeys(catalogBased ? schema : null, catalogBased ? null : schema, table)) {
+        try (var rows = connection.getMetaData().getPrimaryKeys(catalogBased ? schema : null, catalogBased ? null : schema, SqlDialect.metadataTable(dbms, schema, table))) {
             while (rows.next()) keys.put(rows.getInt("KEY_SEQ"), rows.getString("COLUMN_NAME"));
         }
         return new ArrayList<>(keys.values());
@@ -112,11 +112,14 @@ public class JdbcReader {
         Map<String, int[]> available = new LinkedHashMap<>();
         Map<String, String> typeNames = new HashMap<>();
         try (var rows = meta.getColumns(catalogBased ? schema : null,
-                catalogBased ? null : JdbcExplorer.literalPattern(meta, schema), JdbcExplorer.literalPattern(meta, table), "%")) {
+                catalogBased ? null : JdbcExplorer.literalPattern(meta, schema), JdbcExplorer.literalPattern(meta, SqlDialect.metadataTable(dbms, schema, table)), "%")) {
             while (rows.next()) {
                 String name = rows.getString("COLUMN_NAME");
-                if (!table.equals(rows.getString("TABLE_NAME"))) continue; // 패턴 일치 보정
-                available.put(name, new int[]{rows.getInt("DATA_TYPE"), rows.getInt("DECIMAL_DIGITS")});
+                if (!table.equals(SqlDialect.metadataName(dbms, schema, rows.getString("TABLE_NAME")))) continue; // 패턴 일치 보정
+                int type = rows.getInt("DATA_TYPE");
+                // Tibero DATE는 시간도 저장하므로 getDate()로 잘라 읽지 않는다.
+                if (dbms == Dbms.tibero && type == Types.DATE) type = Types.TIMESTAMP;
+                available.put(name, new int[]{type, rows.getInt("DECIMAL_DIGITS")});
                 typeNames.put(name, rows.getString("TYPE_NAME"));
             }
         }
@@ -163,18 +166,17 @@ public class JdbcReader {
             }
             sql += whereClause(filter, keyCondition);
             sql += " ORDER BY " + String.join(", ", keyColumns.stream().map(n -> quote(dbms, n)).toList());
-            sql += SqlDialect.first(dbms, limit);
+            sql = SqlDialect.paginate(dbms, sql, limit, -1, keyset != null, names);
         } else if (offset >= 0) {
             sql += whereClause(filter, null);
             List<String> order = new ArrayList<>(); // 기본 키(KEY_SEQ 순) → 없으면 선택한 컬럼 전체
             List<String> keys = primaryKey(connection, dbms, schema, table);
             (keys.isEmpty() ? names : keys).forEach(name -> order.add(quote(dbms, name)));
             sql += " ORDER BY " + String.join(", ", order);
-            sql += SqlDialect.page(dbms, limit, offset);
+            sql = SqlDialect.paginate(dbms, sql, limit, offset, true, names);
         } else {
             sql += whereClause(filter, null);
-            if (dbms == Dbms.sqlserver) sql += " ORDER BY (SELECT NULL)";
-            sql += SqlDialect.first(dbms, limit);
+            sql = SqlDialect.paginate(dbms, sql, limit, -1, false, names);
         }
         List<Row> rows = new ArrayList<>();
         try (PreparedStatement statement = connection.prepareStatement(sql)) {

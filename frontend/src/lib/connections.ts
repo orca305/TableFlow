@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { remove, request } from "./api";
 
-export type Dbms = "oracle" | "postgresql" | "mysql" | "mariadb" | "sqlserver";
+export type Dbms = "oracle" | "postgresql" | "mysql" | "mariadb" | "sqlserver" | "tibero" | "cubrid";
 /** 요청에 쓰는 접속 정보. 저장된 연결의 비밀번호를 쓰려면 password를 비우고 savedId를 보낸다(서버가 복호화). */
 export type Connection = { dbms: Dbms; host: string; port: number; database: string; username: string; password: string; tls: boolean; savedId?: string; driverId?: string };
 export type SavedConnection = { id: string; name: string; dbms: Dbms; host: string; port: number; database: string; username: string; tls: boolean; passwordSaved: boolean; savedAt: string; driverId?: string };
@@ -12,11 +12,11 @@ export type DbColumn = { name: string; type: string; jdbcType?: number; size: nu
 export type ServerInfo = {
   enabled: boolean; loadEnabled: boolean; savedEnabled: boolean; savePasswordEnabled: boolean; defaultChunkSize: number;
   installedDrivers?: InstalledDriver[];
-  drivers: { dbms: Dbms; defaultPort: number; available: boolean; version: string; capabilities?: { browse: boolean; load: boolean; createTable: boolean; preserveKeys: boolean; experimental: boolean } }[];
+  drivers: { dbms: Dbms; defaultPort: number; available: boolean; version: string; capabilities?: { browse: boolean; load: boolean; createTable: boolean; preserveKeys: boolean; experimental: boolean; verifiedTls?: boolean } }[];
 };
 
-export const PORTS: Record<Dbms, number> = { oracle: 1521, postgresql: 5432, mysql: 3306, mariadb: 3306, sqlserver: 1433 };
-export const DBMS_LABEL: Record<Dbms, string> = { oracle: "Oracle", postgresql: "PostgreSQL", mysql: "MySQL", mariadb: "MariaDB", sqlserver: "SQL Server" };
+export const PORTS: Record<Dbms, number> = { oracle: 1521, postgresql: 5432, mysql: 3306, mariadb: 3306, sqlserver: 1433, tibero: 8629, cubrid: 33000 };
+export const DBMS_LABEL: Record<Dbms, string> = { oracle: "Oracle", postgresql: "PostgreSQL", mysql: "MySQL", mariadb: "MariaDB", sqlserver: "SQL Server", tibero: "Tibero", cubrid: "CUBRID" };
 export const blankConnection = (dbms: Dbms = "postgresql"): Connection => ({ dbms, host: "localhost", port: PORTS[dbms], database: "", username: "", password: "", tls: false });
 
 /** 서버 기능 상태(DB 조회·적재 활성화, 비밀번호 저장 허용, 기본 분할 단위). */

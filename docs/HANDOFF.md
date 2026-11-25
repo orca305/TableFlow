@@ -1,6 +1,6 @@
 # 인수인계 (2026-11-20 기준)
 
-> **2026-11-25 설계 기준:** [내부망 설치형 아키텍처](INTRANET_ARCHITECTURE.md). 사용자 요구: 오프라인 설치·사용자 JDBC 드라이버 반입·RabbitMQ/Java 워커·Celery OCR·향후 수집 에이전트. 구현 진행 상황은 [INTRANET_PROGRESS.md](INTRANET_PROGRESS.md)를 확인한다. SQL Server Developer 실서버 검증 후 사용자 요청으로 이번 범위는 SQL Server까지로 제한했다. Tibero/CUBRID 이후는 보류이며 12단계 전체가 완료된 것은 아니다. 과거 문서의 간헐 테스트 실패 원인 확정 표현은 정정한다. 메모리 부족은 가설이며 원인은 아직 확정되지 않았다.
+> **2026-11-25 설계 기준:** [내부망 설치형 아키텍처](INTRANET_ARCHITECTURE.md). 사용자 요구: 오프라인 설치·사용자 JDBC 드라이버 반입·RabbitMQ/Java 워커·Celery OCR·향후 수집 에이전트. 구현 진행 상황은 [INTRANET_PROGRESS.md](INTRANET_PROGRESS.md)를 확인한다. SQL Server Developer 검증 후 사용자 재개 요청으로 Tibero/CUBRID를 추가했다. 최신 상태는 [DBMS 확장 검증](DBMS_EXPANSION.md) 참조. Tibero 실서버 검증은 남아 있으며 12단계 전체가 완료된 것은 아니다. 과거 문서의 간헐 테스트 실패 원인 확정 표현은 정정한다. 메모리 부족은 가설이며 원인은 아직 확정되지 않았다.
 
 > **최신 요약본은 [HANDOFF_GPT.md](HANDOFF_GPT.md)** (2026-11-24, 개발한 기능·남은 할 일·실행 명령). 이 문서는 시간순 상세 기록입니다.
 

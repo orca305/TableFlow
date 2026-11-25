@@ -31,7 +31,8 @@ class TableDdlTests {
     }
     @Test void onlyCreateStatementsAndRejectsUnsafeNames() {
         for (Dbms db : Dbms.values()) {
-            String ddl = TableDdl.createTable(db, "s", "t", cols).toUpperCase();
+            List<Col> safeCols = db == Dbms.cubrid ? cols.stream().map(c -> new Col(c.name().toLowerCase(java.util.Locale.ROOT), c.type(), c.nullable(), c.primaryKey(), c.size(), c.scale())).toList() : cols;
+            String ddl = TableDdl.createTable(db, "s", "t", safeCols).toUpperCase();
             assertFalse(ddl.contains("DROP ") || ddl.contains("ALTER ") || ddl.contains("DELETE ") || ddl.contains("UPDATE ") || ddl.contains(";"));
             assertTrue(TableDdl.receiptsTable(db, "s").contains("request_id"));
         }

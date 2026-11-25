@@ -42,7 +42,7 @@ public class BatchMigration {
         if (clean.isEmpty()) clean = prefix;
         if (Character.isDigit(clean.charAt(0))) clean = prefix.charAt(0) + "_" + clean;
         if (clean.length() > 60) clean = clean.substring(0, 60);
-        return dbms == Dbms.postgresql ? clean.toLowerCase(Locale.ROOT) : dbms == Dbms.oracle ? clean.toUpperCase(Locale.ROOT) : clean;
+        return dbms == Dbms.postgresql || dbms == Dbms.cubrid ? clean.toLowerCase(Locale.ROOT) : dev.tableflow.connection.SqlDialect.oracleTypes(dbms) ? clean.toUpperCase(Locale.ROOT) : clean;
     }
 
     private record Prepared(String table, String target, boolean exists, List<Mapping> mappings, List<String> excluded) {}

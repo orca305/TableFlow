@@ -1,12 +1,14 @@
 # TableFlow
 
-파일(CSV·Excel·PDF·이미지)과 관계형 DB(Oracle · PostgreSQL · MySQL · MariaDB · SQL Server)를 **원본**과 **대상**으로 삼아 표 데이터를 검토·변환·이관하는 ETL 워크스페이스입니다.
+파일(CSV·Excel·PDF·이미지)과 관계형 DB(Oracle · PostgreSQL · MySQL · MariaDB · SQL Server · CUBRID)를 **원본**과 **대상**으로 삼아 표 데이터를 검토·변환·이관하는 ETL 워크스페이스입니다.
 
 - **파일 → SQL/파일/DB**: 파싱, 이미지·스캔 PDF는 로컬 OCR, 검증 후 INSERT SQL·CSV·XLSX로 내보내거나 DB에 적재
-- **DB → DB 이관**: 기존 4종 DBMS와 SQL Server 간 이관(SQL Server는 관리자 반입 JDBC JAR 필요). 대용량은 분할 적재, 중단되면 같은 요청으로 **재개**
+- **DB → DB 이관**: 기존 4종 DBMS, SQL Server, 제한 지원 CUBRID 이관(추가 DBMS는 관리자 반입 JDBC JAR 필요). 대용량은 분할 적재, 중단되면 같은 요청으로 **재개**
 - **일괄 이관 · 값 변환 · 행 조건 · 사후 검증 · 스케줄**까지 갖춘 마이그레이션 도구
 
 SQL Server의 반입 드라이버 설정과 Developer 실서버 검증 범위는 [내부망 전환 진행 기록](docs/INTRANET_PROGRESS.md)에 정리했습니다.
+
+CUBRID·Tibero의 현재 검증 범위와 TLS/자동 증가 컬럼 제한은 [DBMS 확장 검증](docs/DBMS_EXPANSION.md)을 확인하세요.
 
 스택: Spring Boot 3.5 (Java 21) · Next.js 16 / React 19 · FastAPI + RapidOCR
 
@@ -86,7 +88,7 @@ scripts/     Windows 실행 보조 스크립트
 - 순환 외래 키는 안내만 하고 자동 처리하지 않습니다. 기본값 복제는 리터럴·불리언·현재 시각만 지원합니다
 - 변환 규칙에 날짜 포맷·정규식·조건(CASE)이 없고, 변환한 컬럼은 이관 후 값 비교에서 제외됩니다
 - PDF/OCR은 페이지당 한 개의 정방향 표와 첫 행 헤더를 전제로 합니다. 외부 OCR 공급자는 모의 HTTP 계약만 검증했습니다
-- SQL Server JDBC 조회·이관·직접 적재는 지원하며 SQL 파일 내보내기 방언은 기존 4종입니다. Tibero·CUBRID·SQLite는 이번 지원 범위에 포함하지 않습니다
+- SQL Server JDBC 조회·이관·직접 적재는 지원하며 SQL 파일 내보내기 방언은 기존 4종입니다. CUBRID는 로컬 연결 및 기본 키 값을 일반 컬럼에 적재하는 범위에서 실서버 검증했습니다. Tibero는 실험 단계로 기본 비활성화·실서버 미검증이며 SQLite는 미지원입니다
 
 전체 목록과 우선순위는 [인수인계 문서 §4](docs/HANDOFF.md)에 있습니다.
 

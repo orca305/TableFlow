@@ -180,3 +180,14 @@ Oracle 대상 테이블에 IDENTITY 컬럼이 있으면 `JdbcLoader`의 스키�
 - 전체 실제 DB 회귀: 153개 통과, 4개 건너뜀, 실패 0. 기존 Oracle/PostgreSQL/MySQL/MariaDB 포함.
 - 브라우저 7개 통과. 드라이버 2개는 API mock 기반 버전 전달/관리 키 비저장 검사다.
 - Webpack 빌드/타입 검사 통과. 기본 Turbopack 빌드의 Node 하위 프로세스 오류는 미해결이며 원인은 확정하지 않았다.
+
+
+## 2026-11-25 후속: Tibero 실험 어댑터와 CUBRID 제한 지원
+
+- 기존 5종과 CUBRID를 포함한 전체 DB 회귀: 168개 중 **163개 통과, 5개 건너뜀, 실패 0**. Tibero 실서버 테스트 1개는 미실행이며 건너뜀에 포함된다.
+- 이후 CUBRID 소유자 필터/일괄 이관을 포함한 관련 추가 검증: **11개 통과**(CUBRID 실제 6, CUBRID 단위 2, Tibero 단위 3). 전체 회귀와 중복되는 테스트를 합산하지 않는다.
+- 실제 브라우저 CUBRID→PostgreSQL 및 PostgreSQL→CUBRID **2개 통과**. 실제 관리자 JAR 등록·연결·테이블 선택·사전 점검·동의·적재·사후 검증 경로다.
+- 기존 브라우저 회귀 **7개 통과**. 그중 드라이버 2개는 API mock 기반이며 실제 DB 검증으로 세지 않는다.
+- Webpack 프로덕션 빌드 및 TypeScript 검사 통과. 기존 Turbopack 오류 해결 여부는 검증 범위에 포함하지 않았다.
+- 엔진 CUBRID `11.3.6.1321`, JAR `11.2.1.0040`(공식 서버 이미지 포함). 이미지 digest/JAR SHA-256은 [검증 기록](DBMS_EXPANSION.md)에 명시했다.
+- Tibero는 정식 JAR/전용 서버가 없어 기본 비활성화·실서버 미검증이다. H2 Oracle 모드 ROWNUM 검사를 Tibero 실서버 검증으로 표현하지 않는다.

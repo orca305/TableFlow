@@ -481,8 +481,8 @@ public class MigrationService {
     }
     private boolean exists(Connection c, Dbms db, String schema, String name) throws SQLException {
         var meta = c.getMetaData(); boolean catalog = dev.tableflow.connection.SqlDialect.catalogBased(db);
-        try (var rs = meta.getTables(catalog ? schema : null, catalog ? null : JdbcExplorer.literalPattern(meta, schema), JdbcExplorer.literalPattern(meta, name), new String[]{"TABLE"})) {
-            while (rs.next()) if (name.equals(rs.getString("TABLE_NAME"))) return true;
+        try (var rs = meta.getTables(catalog ? schema : null, catalog ? null : JdbcExplorer.literalPattern(meta, schema), JdbcExplorer.literalPattern(meta, dev.tableflow.connection.SqlDialect.metadataTable(db, schema, name)), new String[]{"TABLE"})) {
+            while (rs.next()) if (name.equals(dev.tableflow.connection.SqlDialect.metadataName(db, schema, rs.getString("TABLE_NAME")))) return true;
         }
         return false;
     }
@@ -491,7 +491,7 @@ public class MigrationService {
         return explorer.withConnection(c, true, connection -> {
             var meta = connection.getMetaData(); boolean catalog = dev.tableflow.connection.SqlDialect.catalogBased(c.dbms());
             List<String> result = new ArrayList<>();
-            try (var rs = meta.getImportedKeys(catalog ? schema : null, catalog ? null : schema, table)) {
+            try (var rs = meta.getImportedKeys(catalog ? schema : null, catalog ? null : schema, dev.tableflow.connection.SqlDialect.metadataTable(c.dbms(), schema, table))) {
                 while (rs.next() && result.size() < 20) {
                     String parent = catalog ? rs.getString("PKTABLE_CAT") : rs.getString("PKTABLE_SCHEM");
                     result.add(rs.getString("FKCOLUMN_NAME") + " → " + parent + "." + rs.getString("PKTABLE_NAME") + "(" + rs.getString("PKCOLUMN_NAME") + ")");
@@ -729,6 +729,7 @@ public class MigrationService {
     private List<String> resync(Credentials target, String schema, String table, Set<String> columns) {
         if (columns.isEmpty()) return List.of();
         Dbms db = target.dbms();
+        if (db == Dbms.tibero || db == Dbms.cubrid) throw new IllegalArgumentException("이 DBMS의 자동 증가 번호 보존은 지원하지 않습니다.");
         if (db == Dbms.sqlserver) return List.of("IDENTITY_INSERT로 입력한 값이 현재 번호보다 크면 SQL Server가 자동으로 다음 번호를 갱신합니다.");
         if (db == Dbms.mysql || db == Dbms.mariadb) return List.of("AUTO_INCREMENT는 DB가 최댓값 다음으로 자동 갱신했습니다.");
         List<String> notes = new ArrayList<>();

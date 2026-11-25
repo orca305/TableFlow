@@ -12,6 +12,8 @@ import java.util.*;
 public class JdbcExplorer {
     private final boolean enabled;
     @Value("${tableflow.jdbc.sqlserver-enabled:true}") private boolean sqlserverEnabled = true;
+    @Value("${tableflow.jdbc.tibero-enabled:false}") private boolean tiberoEnabled;
+    @Value("${tableflow.jdbc.cubrid-enabled:true}") private boolean cubridEnabled = true;
     private final Set<String> hosts;
     private ConnectionStore store;
     private DriverCatalog driverCatalog;
@@ -24,7 +26,8 @@ public class JdbcExplorer {
     }
     public enum Dbms {
         oracle("oracle.jdbc.OracleDriver", 1521), postgresql("org.postgresql.Driver", 5432),
-        mysql("com.mysql.cj.jdbc.Driver", 3306), mariadb("org.mariadb.jdbc.Driver", 3306), sqlserver("com.microsoft.sqlserver.jdbc.SQLServerDriver", 1433);
+        mysql("com.mysql.cj.jdbc.Driver", 3306), mariadb("org.mariadb.jdbc.Driver", 3306), sqlserver("com.microsoft.sqlserver.jdbc.SQLServerDriver", 1433),
+        tibero("com.tmax.tibero.jdbc.TbDriver", 8629), cubrid("cubrid.jdbc.driver.CUBRIDDriver", 33000);
         final String driver; final int port;
         Dbms(String driver, int port) { this.driver = driver; this.port = port; }
     }
@@ -45,12 +48,14 @@ public class JdbcExplorer {
         /** 비밀번호가 비어 있고 savedId가 있으면 저장된 연결의 비밀번호를 서버에서 복호화해 사용한다. */
         @Override public String toString() { return "Credentials[redacted]"; }
     }
-    public record DriverCapabilities(boolean browse, boolean load, boolean createTable, boolean preserveKeys, boolean experimental) {}
+    public record DriverCapabilities(boolean browse, boolean load, boolean createTable, boolean preserveKeys, boolean experimental, boolean verifiedTls) {}
     public record DriverInfo(Dbms dbms, int defaultPort, boolean available, String version, DriverCapabilities capabilities) {}
     private DriverCapabilities capabilities(Dbms db) {
         return switch (db) {
-            case oracle, postgresql, mysql, mariadb -> new DriverCapabilities(true, true, true, true, false);
-            case sqlserver -> new DriverCapabilities(sqlserverEnabled, sqlserverEnabled, sqlserverEnabled, sqlserverEnabled, false);
+            case oracle, postgresql, mysql, mariadb -> new DriverCapabilities(true, true, true, true, false, true);
+            case sqlserver -> new DriverCapabilities(sqlserverEnabled, sqlserverEnabled, sqlserverEnabled, sqlserverEnabled, false, true);
+            case tibero -> new DriverCapabilities(tiberoEnabled, tiberoEnabled, tiberoEnabled, false, true, false);
+            case cubrid -> new DriverCapabilities(cubridEnabled, cubridEnabled, cubridEnabled, false, true, false);
         };
     }
     public record Registry(boolean enabled, List<DriverInfo> drivers) {}
@@ -76,6 +81,16 @@ public class JdbcExplorer {
     public Items<String> schemas(Credentials credentials) {
         return connected(credentials, connection -> {
             List<String> items = new ArrayList<>();
+            if (credentials.dbms() == Dbms.cubrid) {
+                items.add(credentials.username().toUpperCase(Locale.ROOT));
+                try (var st = connection.createStatement()) {
+                    st.setQueryTimeout(20);
+                    try (var rows = st.executeQuery("SELECT DISTINCT owner_name FROM db_class ORDER BY owner_name")) {
+                        while (rows.next()) { String owner = rows.getString(1); if (!items.contains(owner)) { if (items.size() == 200) return new Items<>(items, true); items.add(owner); } }
+                    }
+                }
+                return new Items<>(items, false);
+            }
             boolean catalog = catalogBased(credentials.dbms());
             try (var rows = catalog ? connection.getMetaData().getCatalogs() : connection.getMetaData().getSchemas()) {
                 while (rows.next()) {
@@ -92,10 +107,12 @@ public class JdbcExplorer {
             var meta = connection.getMetaData();
             List<String> items = new ArrayList<>();
             try (var rows = meta.getTables(catalogBased(credentials.dbms()) ? schema : null,
-                    catalogBased(credentials.dbms()) ? null : literalPattern(meta, schema), "%", new String[]{"TABLE", "VIEW"})) {
+                    catalogBased(credentials.dbms()) ? null : literalPattern(meta, schema),
+                    credentials.dbms() == Dbms.cubrid ? SqlDialect.metadataTable(credentials.dbms(), literalPattern(meta, schema), "%") : "%",
+                    new String[]{"TABLE", "VIEW"})) {
                 while (rows.next()) {
                     if (items.size() == 200) return new Items<>(items, true);
-                    items.add(rows.getString("TABLE_NAME"));
+                    items.add(SqlDialect.metadataName(credentials.dbms(), schema, rows.getString("TABLE_NAME")));
                 }
             }
             return new Items<>(items, false);
@@ -108,21 +125,22 @@ public class JdbcExplorer {
             String catalog = catalogBased(credentials.dbms()) ? schema : null;
             String namespace = catalogBased(credentials.dbms()) ? null : schema;
             Set<String> keys = new HashSet<>();
-            try (var rows = meta.getPrimaryKeys(catalog, namespace, table)) {
+            try (var rows = meta.getPrimaryKeys(catalog, namespace, SqlDialect.metadataTable(credentials.dbms(), schema, table))) {
                 while (rows.next() && keys.size() < 1000) keys.add(rows.getString("COLUMN_NAME"));
             }
             Set<String> foreign = new HashSet<>();
-            try (var rows = meta.getImportedKeys(catalog, namespace, table)) { // 이 테이블이 다른 테이블을 참조하는 컬럼
+            try (var rows = meta.getImportedKeys(catalog, namespace, SqlDialect.metadataTable(credentials.dbms(), schema, table))) { // 이 테이블이 다른 테이블을 참조하는 컬럼
                 while (rows != null && rows.next() && foreign.size() < 1000) foreign.add(rows.getString("FKCOLUMN_NAME"));
             } catch (SQLException ignored) { /* 드라이버가 지원하지 않으면 FK 표시만 생략 */ }
             List<ColumnInfo> items = new ArrayList<>();
-            try (var rows = meta.getColumns(catalog, namespace == null ? null : literalPattern(meta, namespace), literalPattern(meta, table), "%")) {
+            Set<String> auto = JdbcMetadata.autoColumns(connection, credentials.dbms(), schema, table);
+            try (var rows = meta.getColumns(catalog, namespace == null ? null : literalPattern(meta, namespace), literalPattern(meta, SqlDialect.metadataTable(credentials.dbms(), schema, table)), "%")) {
                 while (rows.next()) {
                     if (items.size() == 500) return new Items<>(items, true);
                     String name = rows.getString("COLUMN_NAME");
                     items.add(new ColumnInfo(name, rows.getString("TYPE_NAME"), rows.getInt("DATA_TYPE"), rows.getInt("COLUMN_SIZE"),
                         rows.getInt("DECIMAL_DIGITS"), rows.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls,
-                        keys.contains(name), "YES".equals(rows.getString("IS_AUTOINCREMENT")), rows.getInt("ORDINAL_POSITION"), foreign.contains(name)));
+                        keys.contains(name), (credentials.dbms() == Dbms.cubrid ? auto.contains(rows.getString("COLUMN_NAME")) : "YES".equals(rows.getString("IS_AUTOINCREMENT"))), rows.getInt("ORDINAL_POSITION"), foreign.contains(name)));
                 }
             }
             return new Items<>(items, false);
@@ -138,10 +156,10 @@ public class JdbcExplorer {
             var meta = connection.getMetaData(); boolean catalogBased = catalogBased(credentials.dbms());
             String catalog = catalogBased ? schema : null, namespace = catalogBased ? null : schema;
             Set<String> pk = new HashSet<>();
-            try (var rows = meta.getPrimaryKeys(catalog, namespace, table)) { while (rows.next()) pk.add(rows.getString("COLUMN_NAME")); }
+            try (var rows = meta.getPrimaryKeys(catalog, namespace, SqlDialect.metadataTable(credentials.dbms(), schema, table))) { while (rows.next()) pk.add(rows.getString("COLUMN_NAME")); }
             // 인덱스: 이름별로 모으고 ORDINAL_POSITION 순으로 정렬
             Map<String, TreeMap<Integer, String>> cols = new LinkedHashMap<>(); Map<String, Boolean> unique = new HashMap<>();
-            try (var rows = meta.getIndexInfo(catalog, namespace, table, false, true)) {
+            try (var rows = meta.getIndexInfo(catalog, namespace, SqlDialect.metadataTable(credentials.dbms(), schema, table), false, true)) {
                 while (rows != null && rows.next()) {
                     String name = rows.getString("INDEX_NAME"), column = rows.getString("COLUMN_NAME");
                     if (name == null || column == null || rows.getShort("TYPE") == DatabaseMetaData.tableIndexStatistic) continue;
@@ -157,12 +175,17 @@ public class JdbcExplorer {
             }
             // 외래 키: FK 이름별로 KEY_SEQ 순서의 컬럼 쌍
             Map<String, TreeMap<Integer, String[]>> fks = new LinkedHashMap<>(); Map<String, String[]> parents = new HashMap<>();
-            try (var rows = meta.getImportedKeys(catalog, namespace, table)) {
+            try (var rows = meta.getImportedKeys(catalog, namespace, SqlDialect.metadataTable(credentials.dbms(), schema, table))) {
                 while (rows != null && rows.next()) {
                     String name = Optional.ofNullable(rows.getString("FK_NAME")).orElse("fk_" + rows.getString("PKTABLE_NAME"));
                     fks.computeIfAbsent(name, k -> new TreeMap<>()).put(rows.getInt("KEY_SEQ"), new String[]{rows.getString("FKCOLUMN_NAME"), rows.getString("PKCOLUMN_NAME")});
                     String parentSchema = catalogBased ? rows.getString("PKTABLE_CAT") : rows.getString("PKTABLE_SCHEM");
                     String parentTable = rows.getString("PKTABLE_NAME");
+                    if (credentials.dbms() == Dbms.cubrid) {
+                        int dot = parentTable.indexOf('.');
+                        if (dot >= 0) { parentSchema = parentTable.substring(0, dot).toUpperCase(Locale.ROOT); parentTable = parentTable.substring(dot + 1); }
+                        else if (parentSchema == null) parentSchema = schema;
+                    }
                     parents.put(name, new String[]{parentSchema, parentTable});
                 }
             } catch (SQLException ignored) { /* 외래 키를 못 읽으면 복제만 건너뛴다 */ }
@@ -173,7 +196,7 @@ public class JdbcExplorer {
             }
             // 기본값(원문). Oracle은 COLUMN_DEF가 LONG이라 컬럼 번호 순서대로 읽어야 한다.
             Map<String, String> defaults = new LinkedHashMap<>();
-            try (var rows = meta.getColumns(catalog, namespace == null ? null : literalPattern(meta, namespace), literalPattern(meta, table), "%")) {
+            try (var rows = meta.getColumns(catalog, namespace == null ? null : literalPattern(meta, namespace), literalPattern(meta, SqlDialect.metadataTable(credentials.dbms(), schema, table)), "%")) {
                 while (rows.next()) { String name = rows.getString(4); String def = rows.getString(13); if (def != null && !def.isBlank()) defaults.put(name, def.strip()); }
             }
             return new TableExtras(indexes, foreign, defaults);
@@ -186,6 +209,8 @@ public class JdbcExplorer {
     }
     public static String literalPattern(DatabaseMetaData meta, String value) throws SQLException {
         String escape = meta.getSearchStringEscape();
+        // CUBRID JDBC 11.2는 빈 문자열을 반환하지만 서버의 schema-info 패턴은 역슬래시 이스케이프를 지원한다.
+        if ((escape == null || escape.isEmpty()) && "CUBRID".equalsIgnoreCase(meta.getDatabaseProductName())) escape = "\\";
         if (escape == null || escape.isEmpty()) {
             if (value.contains("%") || value.contains("_")) throw new Failure(400, "JDBC_PATTERN", "이 드라이버는 해당 이름의 정확한 메타데이터 조회를 지원하지 않습니다.");
             return value;
@@ -198,6 +223,8 @@ public class JdbcExplorer {
             case postgresql -> "jdbc:postgresql://" + c.host() + ":" + c.port() + "/" + c.database();
             case mysql -> "jdbc:mysql://" + c.host() + ":" + c.port() + "/" + c.database();
             case mariadb -> "jdbc:mariadb://" + c.host() + ":" + c.port() + "/" + c.database();
+            case tibero -> "jdbc:tibero:thin:@" + c.host() + ":" + c.port() + ":" + c.database();
+            case cubrid -> "jdbc:cubrid:" + c.host() + ":" + c.port() + ":" + c.database() + ":::?connectTimeout=5&queryTimeout=30&charSet=utf-8";
             case sqlserver -> "jdbc:sqlserver://" + c.host() + ":" + c.port() + ";databaseName=" + c.database();
         };
     }
@@ -212,6 +239,11 @@ public class JdbcExplorer {
         if (c.dbms() == Dbms.oracle) {
             props.setProperty("oracle.net.CONNECT_TIMEOUT", "5000"); props.setProperty("oracle.net.OUTBOUND_CONNECT_TIMEOUT", "5000");
             props.setProperty("oracle.jdbc.ReadTimeout", "10000"); props.setProperty("oracle.net.ssl_server_dn_match", "true");
+        } else if (c.dbms() == Dbms.tibero) {
+            props.setProperty("login_timeout", "5000"); props.setProperty("read_timeout", "10000");
+        } else if (c.dbms() == Dbms.cubrid) {
+            props.setProperty("connectTimeout", "5"); props.setProperty("queryTimeout", "30");
+            props.setProperty("charSet", "utf-8"); props.setProperty("logOnException", "false");
         } else if (c.dbms() == Dbms.sqlserver) {
             props.setProperty("encrypt", Boolean.toString(c.tls()));
             props.setProperty("trustServerCertificate", "false");
@@ -229,8 +261,12 @@ public class JdbcExplorer {
     @FunctionalInterface public interface MetadataWork<T> { T run(Connection connection) throws SQLException; }
     private <T> T connected(Credentials credentials, MetadataWork<T> work) { return withConnection(credentials, true, work); }
     public <T> T withConnection(Credentials credentials, boolean readOnly, MetadataWork<T> work) {
-        if (credentials.dbms() == Dbms.sqlserver && !sqlserverEnabled)
-            throw new Failure(503, "JDBC_EXPERIMENTAL_DISABLED", "서버에서 SQL Server 연결이 비활성화되어 있습니다. TABLEFLOW_SQLSERVER_ENABLED 설정을 확인해주세요.");
+        boolean active = switch (credentials.dbms()) {
+            case sqlserver -> sqlserverEnabled; case tibero -> tiberoEnabled; case cubrid -> cubridEnabled; default -> true;
+        };
+        if (!active) throw new Failure(503, "JDBC_EXPERIMENTAL_DISABLED", "이 DBMS는 서버에서 비활성화되어 있습니다. 해당 DBMS 활성화 설정을 확인해주세요.");
+        if (credentials.tls() && (credentials.dbms() == Dbms.tibero || credentials.dbms() == Dbms.cubrid))
+            throw new Failure(400, "JDBC_TLS_UNVERIFIED", "이 DBMS의 인증서·호스트 검증 TLS는 아직 지원하지 않습니다. 암호화 설정만으로 검증을 대체하지 않으며 현재는 루프백 테스트 연결만 허용합니다.");
         if (!enabled) throw new Failure(503, "JDBC_DISABLED", "서버에서 DB 탐색을 활성화해주세요. TABLEFLOW_JDBC_ENABLED=true 설정이 필요합니다.");
         if (!hosts.contains(credentials.host().toLowerCase(Locale.ROOT))) throw new Failure(403, "JDBC_HOST_DENIED", "서버의 DB 호스트 허용 목록에 등록되지 않았습니다.");
         if (!credentials.tls()) {

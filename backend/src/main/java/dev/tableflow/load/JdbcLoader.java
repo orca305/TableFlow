@@ -38,6 +38,7 @@ public class JdbcLoader {
     public Plan check(Credentials c,Table table,String schema,String name) { return check(c,table,schema,name,Set.of()); }
     /** keepIdentity: 원본 값을 그대로 넣을 자동 증가(IDENTITY/serial) 대상 컬럼 이름. 비어 있으면 자동 증가 컬럼 매핑을 거부한다. */
     public Plan check(Credentials c,Table table,String schema,String name,Set<String> keepIdentity) {
+        requireIdentitySupport(c.dbms(), keepIdentity);
         Table output=validate(table,schema,name);
         return explorer.withConnection(c,true,connection->{
             try { inspect(connection,c.dbms(),schema,name,output,keepIdentity); }
@@ -47,6 +48,7 @@ public class JdbcLoader {
     }
     public DatabaseLoader.Result load(Credentials c,Table table,String schema,String name,String requestId) { return load(c,table,schema,name,requestId,Set.of()); }
     public DatabaseLoader.Result load(Credentials c,Table table,String schema,String name,String requestId,Set<String> keepIdentity) {
+        requireIdentitySupport(c.dbms(), keepIdentity);
         Table output=validate(table,schema,name); String hash=fingerprint(c,output,schema,name);
         return explorer.withConnection(c,false,connection->{
             if(family(c.dbms())) connection.setCatalog(schema);
@@ -87,6 +89,10 @@ public class JdbcLoader {
             } catch(RuntimeException e) {try{connection.rollback();}catch(SQLException ignored){} throw e;}
         });
     }
+    private void requireIdentitySupport(Dbms db, Set<String> keepIdentity) {
+        if ((db == Dbms.tibero || db == Dbms.cubrid) && !keepIdentity.isEmpty())
+            throw new IllegalArgumentException("이 DBMS의 기존 자동 증가 컬럼 값 보존은 아직 지원하지 않습니다. 신규 일반 컬럼에 원본 키를 이관하거나 자동 증가 컬럼을 매핑에서 제외해주세요.");
+    }
     private void settings(Connection c,Dbms db,String schema,String table) throws SQLException {
         try(var st=c.createStatement()) {
             st.setQueryTimeout(20);
@@ -94,13 +100,16 @@ public class JdbcLoader {
                 st.execute("SET XACT_ABORT ON"); st.execute("SET LOCK_TIMEOUT 10000");
                 for (String target : List.of(table, RECEIPTS))
                     try (var rs = st.executeQuery("SELECT TOP (1) 1 FROM " + qualified(db, schema, target) + " WITH (TABLOCKX, HOLDLOCK)")) { while (rs.next()) {} }
+            } else if (db == Dbms.cubrid) {
+                st.execute("SET TRANSACTION LOCK TIMEOUT 10");
+                for (String target : List.of(table, RECEIPTS)) try (var rs = st.executeQuery("SELECT 1 FROM " + qualified(db, schema, target) + " LIMIT 1 FOR UPDATE")) { while (rs.next()) {} }
             } else if(family(db)) {
                 st.execute("SET SESSION sql_mode='STRICT_ALL_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
                 st.execute("SET SESSION innodb_lock_wait_timeout=10"); st.execute("SET SESSION lock_wait_timeout=10");
                 for(String target:List.of(table,RECEIPTS)) try(var rs=st.executeQuery("SELECT 1 FROM "+qualified(db,schema,target)+" LIMIT 0")){}
             } else {
                 if(db==Dbms.postgresql) {st.execute("SET LOCAL statement_timeout='20s'");st.execute("SET LOCAL lock_timeout='10s'");}
-                for(String target:List.of(table,RECEIPTS)) st.execute("LOCK TABLE "+qualified(db,schema,target)+ ((db==Dbms.oracle) ? " IN ROW EXCLUSIVE MODE WAIT 10" : " IN ROW EXCLUSIVE MODE"));
+                for(String target:List.of(table,RECEIPTS)) st.execute("LOCK TABLE "+qualified(db,schema,target)+ (dev.tableflow.connection.SqlDialect.oracleTypes(db) ? " IN ROW EXCLUSIVE MODE WAIT 10" : " IN ROW EXCLUSIVE MODE"));
             }
         }
     }
@@ -111,9 +120,9 @@ public class JdbcLoader {
             if(!keys.equals(Set.of("request_id")))throw schema("영수증 테이블의 request_id 단일 기본 키를 확인해주세요.");
             mysql.inspect(c,name,included(table),table);return;
         }
-        var meta=c.getMetaData(); String escape=meta.getSearchStringEscape();
+        var meta=c.getMetaData();
         for(String target:List.of(name,RECEIPTS)) {
-            try(var rows=meta.getTables(null,JdbcExplorer.literalPattern(meta,schema),JdbcExplorer.literalPattern(meta,target),new String[]{"TABLE"})) {
+            try(var rows=meta.getTables(null,JdbcExplorer.literalPattern(meta,schema),JdbcExplorer.literalPattern(meta,dev.tableflow.connection.SqlDialect.metadataTable(db,schema,target)),new String[]{"TABLE"})) {
                 if(!rows.next()) throw schema("대상 테이블과 tableflow_load_receipts 테이블을 먼저 준비해주세요.");
             }
         }
@@ -123,21 +132,23 @@ public class JdbcLoader {
                 try (var rs = st.executeQuery()) { if (!rs.next() || rs.getInt(1) != 1) throw schema("SQL Server 대상 스키마의 VIEW DEFINITION 권한이 필요합니다. 트리거 여부를 확인해야 합니다."); }
             }
         }
-        String triggerSql=db==Dbms.sqlserver ? "SELECT COUNT(*) FROM sys.triggers t JOIN sys.tables c ON c.object_id=t.parent_id JOIN sys.schemas s ON s.schema_id=c.schema_id WHERE s.name=? AND c.name IN (?,?) AND t.is_disabled=0"
-            : (db==Dbms.oracle) ? "SELECT COUNT(*) FROM ALL_TRIGGERS WHERE TABLE_OWNER=? AND TABLE_NAME IN (?,?) AND STATUS='ENABLED'"
+        String triggerSql=db==Dbms.cubrid ? "SELECT COUNT(*) FROM db_trig WHERE target_owner_name=? AND target_class_name IN (?,?)"
+            : db==Dbms.sqlserver ? "SELECT COUNT(*) FROM sys.triggers t JOIN sys.tables c ON c.object_id=t.parent_id JOIN sys.schemas s ON s.schema_id=c.schema_id WHERE s.name=? AND c.name IN (?,?) AND t.is_disabled=0"
+            : dev.tableflow.connection.SqlDialect.oracleTypes(db) ? "SELECT COUNT(*) FROM ALL_TRIGGERS WHERE TABLE_OWNER=? AND TABLE_NAME IN (?,?) AND STATUS='ENABLED'"
             : "SELECT COUNT(*) FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=? AND c.relname IN (?,?) AND NOT t.tgisinternal";
         try(var st=c.prepareStatement(triggerSql)) { st.setQueryTimeout(20);st.setString(1,schema);st.setString(2,name);st.setString(3,RECEIPTS);try(var rs=st.executeQuery()){rs.next();if(rs.getInt(1)>0)throw schema("사용자 트리거가 있는 대상·영수증 테이블은 지원하지 않습니다.");}}
-        Set<String> pk=new HashSet<>();try(var rs=meta.getPrimaryKeys(null,schema,RECEIPTS)){while(rs.next())pk.add(rs.getString("COLUMN_NAME").toLowerCase(Locale.ROOT));}
+        Set<String> pk=new HashSet<>();try(var rs=meta.getPrimaryKeys(null,schema,dev.tableflow.connection.SqlDialect.metadataTable(db,schema,RECEIPTS))){while(rs.next())pk.add(rs.getString("COLUMN_NAME").toLowerCase(Locale.ROOT));}
         if(!pk.equals(Set.of("request_id")))throw schema("영수증 테이블의 request_id 단일 기본 키를 확인해주세요.");
+        Set<String> auto = dev.tableflow.connection.JdbcMetadata.autoColumns(c, db, schema, name);
         Map<String,Column> mapped=new HashMap<>();included(table).forEach(col->mapped.put(col.targetName(),col)); Set<String> found=new HashSet<>();
-        try(var rs=meta.getColumns(null,JdbcExplorer.literalPattern(meta,schema),JdbcExplorer.literalPattern(meta,name),"%")) {
+        try(var rs=meta.getColumns(null,JdbcExplorer.literalPattern(meta,schema),JdbcExplorer.literalPattern(meta,dev.tableflow.connection.SqlDialect.metadataTable(db,schema,name)),"%")) {
             while(rs.next()) {
                 // Oracle의 COLUMN_DEF는 LONG이라 ResultSet 컬럼 순서대로 읽어야 한다(순서가 바뀌면 ORA-17027).
                 String target=rs.getString("COLUMN_NAME");Column col=mapped.get(target);
                 int type=rs.getInt("DATA_TYPE"),size=rs.getInt("COLUMN_SIZE"),scale=rs.getInt("DECIMAL_DIGITS");
                 boolean required=rs.getInt("NULLABLE")==DatabaseMetaData.columnNoNulls;
                 String columnDefault=rs.getString("COLUMN_DEF");
-                boolean identity="YES".equals(rs.getString("IS_AUTOINCREMENT"));boolean generated="YES".equals(rs.getString("IS_GENERATEDCOLUMN"));
+                boolean identity=db==Dbms.cubrid ? auto.contains(target) : "YES".equals(rs.getString("IS_AUTOINCREMENT"));boolean generated=db!=Dbms.cubrid && "YES".equals(rs.getString("IS_GENERATEDCOLUMN"));
                 if(col==null){if(required && columnDefault==null && !generated && !identity)throw schema("필수 대상 컬럼 매핑이 누락되었습니다: "+target);continue;}
                 found.add(target);
                 if(generated || (identity && !keepIdentity.contains(target)) || !compatible(col.dataType(),type,db))throw schema("대상 컬럼 자료형·생성 컬럼 여부를 확인해주세요: "+target);
@@ -161,9 +172,9 @@ public class JdbcLoader {
             case string -> Set.of(Types.CHAR,Types.VARCHAR,Types.NCHAR,Types.NVARCHAR,Types.LONGVARCHAR,Types.LONGNVARCHAR).contains(target);
             case integer -> Set.of(Types.TINYINT,Types.SMALLINT,Types.INTEGER,Types.BIGINT,Types.NUMERIC,Types.DECIMAL).contains(target);
             case decimal -> target==Types.NUMERIC || target==Types.DECIMAL;
-            case date -> target==Types.DATE || ((db==Dbms.oracle) && target==Types.TIMESTAMP);
+            case date -> target==Types.DATE || (dev.tableflow.connection.SqlDialect.oracleTypes(db) && target==Types.TIMESTAMP);
             case datetime -> target==Types.TIMESTAMP;
-            case bool -> target==Types.BOOLEAN || target==Types.BIT || ((db==Dbms.oracle) && (target==Types.NUMERIC || target==Types.DECIMAL));
+            case bool -> target==Types.BOOLEAN || target==Types.BIT || (dev.tableflow.connection.SqlDialect.oracleTypes(db) && (target==Types.NUMERIC || target==Types.DECIMAL)) || (db==Dbms.cubrid && target==Types.SMALLINT);
         };
     }
     private void identityInsert(Connection connection, Dbms db, String schema, String name, boolean enabled) throws SQLException {
@@ -180,8 +191,8 @@ public class JdbcLoader {
         }
     }
     private void bind(PreparedStatement st,int i,String value,DataType type,Dbms db)throws SQLException {
-        if(value==null){st.setNull(i,switch(type){case string->Types.VARCHAR;case integer,decimal->Types.NUMERIC;case date->Types.DATE;case datetime->Types.TIMESTAMP;case bool->(db==Dbms.oracle)?Types.NUMERIC:Types.BOOLEAN;});return;}
-        switch(type){case string->st.setString(i,value);case integer,decimal->st.setBigDecimal(i,new BigDecimal(value));case date->st.setDate(i,java.sql.Date.valueOf(value));case datetime->st.setTimestamp(i,Timestamp.valueOf(java.time.LocalDateTime.parse(value)));case bool->{if((db==Dbms.oracle))st.setInt(i,value.equals("true")?1:0);else st.setBoolean(i,value.equals("true"));}}
+        if(value==null){st.setNull(i,switch(type){case string->Types.VARCHAR;case integer,decimal->Types.NUMERIC;case date->Types.DATE;case datetime->Types.TIMESTAMP;case bool->dev.tableflow.connection.SqlDialect.oracleTypes(db) || db==Dbms.cubrid?Types.NUMERIC:Types.BOOLEAN;});return;}
+        switch(type){case string->st.setString(i,value);case integer,decimal->st.setBigDecimal(i,new BigDecimal(value));case date->st.setDate(i,java.sql.Date.valueOf(value));case datetime->st.setTimestamp(i,Timestamp.valueOf(java.time.LocalDateTime.parse(value)));case bool->{if(dev.tableflow.connection.SqlDialect.oracleTypes(db) || db==Dbms.cubrid)st.setInt(i,value.equals("true")?1:0);else st.setBoolean(i,value.equals("true"));}}
     }
     private void execute(PreparedStatement st,long deadline)throws SQLException {
         long remaining=deadline-System.nanoTime();if(remaining<=0)throw new LoadFailure(503,"LOAD_TIMEOUT","제한 시간을 초과하여 전체 적재를 취소했습니다.");
@@ -199,7 +210,6 @@ public class JdbcLoader {
     private static boolean family(Dbms db){return dev.tableflow.connection.SqlDialect.catalogBased(db);}
     private static String quote(Dbms db,String name){return dev.tableflow.connection.SqlDialect.quote(db,name);}
     private static String qualified(Dbms db,String schema,String name){return quote(db,schema)+"."+quote(db,name);}
-    private static String pattern(String name,String escape){return name.replace(escape,escape+escape).replace("_",escape+"_").replace("%",escape+"%");}
     private LoadFailure schema(String message){return new LoadFailure(422,"LOAD_SCHEMA",message);}
     private static final org.slf4j.Logger log=org.slf4j.LoggerFactory.getLogger(JdbcLoader.class);
     private LoadFailure rejected(SQLException e){

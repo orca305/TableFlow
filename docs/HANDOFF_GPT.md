@@ -4,7 +4,7 @@
 
 이 문서는 ChatGPT/Codex 등 **다른 도구에서 이어서 개발**할 때 가장 먼저 읽는 요약입니다. 더 자세한 배경과 시행착오는 [HANDOFF.md](HANDOFF.md)(시간순 기록), 작업 규칙은 [CLAUDE.md](../CLAUDE.md), API는 [api.md](api.md), 검증 근거는 [TEST_RESULTS.md](TEST_RESULTS.md)에 있습니다. **문서와 코드가 다르면 코드와 테스트 결과를 믿고 문서를 고치세요.**
 
-> **2026-11-25 구현 갱신:** [내부망 전환 진행 기록](INTRANET_PROGRESS.md). 공통 SQL·관리자 반입 JDBC JAR·버전 선택 및 SQL Server Developer 실서버 검증을 완료했다. SQL Server도 기본 제공 JAR 대신 관리자 반입 JAR를 사용한다. 사용자 요청에 따라 이번 작업은 SQL Server까지이며 Tibero/CUBRID는 보류했다. Tibero/CUBRID·오프라인 설치·상태 DB·RabbitMQ·Celery는 아직 구현하지 않았다. 아래 기존 기능 목록과 구분한다.
+> **2026-11-25 구현 갱신:** [내부망 전환 진행 기록](INTRANET_PROGRESS.md). 공통 SQL·관리자 반입 JDBC JAR·버전 선택 및 SQL Server Developer 실서버 검증을 완료했다. SQL Server도 기본 제공 JAR 대신 관리자 반입 JAR를 사용한다. 후속 사용자 재개 요청으로 CUBRID 제한 지원과 Tibero 실험 어댑터를 추가했다. [DBMS 확장 검증](DBMS_EXPANSION.md) 참조. Tibero 실서버 검증·오프라인 설치·상태 DB·RabbitMQ·Celery는 남아 있다. 아래 기존 기능 목록과 구분한다.
 
 ## 1. 프로젝트 한 줄 소개
 

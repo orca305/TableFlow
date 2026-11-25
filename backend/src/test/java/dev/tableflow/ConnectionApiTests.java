@@ -17,7 +17,7 @@ class ConnectionApiTests {
         """;
     @Test void driverRegistryAndDisabledConnectAreExplicit() throws Exception {
         mvc.perform(get("/api/v1/connections/drivers")).andExpect(status().isOk())
-            .andExpect(jsonPath("$.enabled").value(false)).andExpect(jsonPath("$.drivers.length()").value(5));
+            .andExpect(jsonPath("$.enabled").value(false)).andExpect(jsonPath("$.drivers.length()").value(7));
         mvc.perform(post("/api/v1/connections/test").contentType("application/json").content(body))
             .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value("JDBC_DISABLED"));
     }

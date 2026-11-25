@@ -1,6 +1,6 @@
 # TableFlow — Claude Code 작업 지침
 
-파일·관계형 DB(Oracle/PostgreSQL/MySQL/MariaDB/SQL Server)를 Source/Target으로 쓰는 ETL·마이그레이션 도구입니다. Spring Boot(Java 21) + Next.js + (선택) FastAPI OCR.
+파일·관계형 DB(Oracle/PostgreSQL/MySQL/MariaDB/SQL Server 및 제한 지원 CUBRID, 실험 단계 Tibero)를 Source/Target으로 쓰는 ETL·마이그레이션 도구입니다. Spring Boot(Java 21) + Next.js + (선택) FastAPI OCR.
 
 **작업 시작 전에 [docs/HANDOFF.md](docs/HANDOFF.md)를 먼저 읽으세요.** 현재 상태, 실행·테스트 명령, 알려진 한계, 이미 겪은 함정, 다음 작업 후보가 정리되어 있습니다. 상세 검증 근거는 `docs/TEST_RESULTS.md`, API는 `docs/api.md`.
 
@@ -13,7 +13,8 @@
 - 구현과 검증 완료를 구분해서 보고합니다(통과/실패/건너뜀, mock/H2 기반 vs 실서버). 건너뛴 테스트를 검증으로 보고하지 않습니다.
 - 기존 동작을 보존하고, 수정 후 회귀 테스트를 돌립니다. 문제는 로그·코드에서 원인을 확인한 뒤 고칩니다.
 - 위험한 작업(데이터·Docker 볼륨 삭제, 강제 push/reset, 운영 DB 변경)은 사용자 승인 후에만 합니다. **Docker 이미지·볼륨은 TableFlow 전용이 아닐 수 있으니 임의로 정리하지 않습니다.**
-- 실제 DB 테스트는 `infra/jdbc/compose.yml` 및 `infra/jdbc/compose.sqlserver.yml`의 전용 컨테이너(루프백 포트)에서만 실행합니다. DB 비밀번호는 Git·브라우저 저장소·로그·이력에 남기지 않습니다. 예외: 사용자가 "비밀번호 저장"을 선택한 연결만 서버 로컬 `data/connections.json`에 AES-256-GCM으로 암호화해 저장합니다(키는 `TABLEFLOW_SECRET_KEY` 또는 `data/connections.key`, 둘 다 git 제외, 브라우저로 다시 내려보내지 않음).
+- 실제 DB 테스트는 `infra/jdbc/compose.yml`, `compose.sqlserver.yml`, `compose.cubrid.yml`의 전용 컨테이너(모두 infra/jdbc 아래)(루프백 포트)에서만 실행합니다. DB 비밀번호는 Git·브라우저 저장소·로그·이력에 남기지 않습니다. 예외: 사용자가 "비밀번호 저장"을 선택한 연결만 서버 로컬 `data/connections.json`에 AES-256-GCM으로 암호화해 저장합니다(키는 `TABLEFLOW_SECRET_KEY` 또는 `data/connections.key`, 둘 다 git 제외, 브라우저로 다시 내려보내지 않음).
+- Tibero 실서버 테스트는 정식 JAR와 사용자 확인을 받은 전용 루프백 테스트 인스턴스(18629)에서만 실행합니다. 운영 DB로 테스트 포트를 바꾸지 마세요.
 - 커밋·푸시는 사용자가 요청할 때만 합니다. 작업을 끝내면 `docs/HANDOFF.md`와 관련 문서를 최신 상태로 갱신합니다.
 
 ## 자주 쓰는 명령

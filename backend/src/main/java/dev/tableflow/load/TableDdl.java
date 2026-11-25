@@ -21,6 +21,8 @@ public final class TableDdl {
     private static boolean family(Dbms db) { return dev.tableflow.connection.SqlDialect.catalogBased(db); }
 
     public static String createTable(Dbms db, String schema, String table, List<Col> cols) {
+        if (db == Dbms.cubrid && (!table.equals(table.toLowerCase(Locale.ROOT)) || cols.stream().anyMatch(c -> !c.name().equals(c.name().toLowerCase(Locale.ROOT)))))
+            throw new IllegalArgumentException("CUBRID 대상 테이블·컬럼 이름은 소문자로 지정해주세요.");
         if (cols.isEmpty()) throw new IllegalArgumentException("생성할 컬럼이 없습니다.");
         int limit = db == Dbms.postgresql ? 63 : 64;
         for (String id : concat(List.of(table), cols.stream().map(Col::name).toList()))
@@ -39,7 +41,7 @@ public final class TableDdl {
     public static String createIndex(Dbms db, String schema, String table, String index, boolean unique, List<String> columns) {
         checkName(index, db);
         String cols = String.join(", ", columns.stream().map(c -> quote(db, c)).toList());
-        String name = (db == Dbms.oracle) ? quote(db, schema) + "." + quote(db, index) : quote(db, index);
+        String name = dev.tableflow.connection.SqlDialect.oracleTypes(db) ? quote(db, schema) + "." + quote(db, index) : quote(db, index);
         return "CREATE " + (unique ? "UNIQUE " : "") + "INDEX " + name + " ON " + quote(db, schema) + "." + quote(db, table) + " (" + cols + ")";
     }
     /** 외래 키 추가문(부모 테이블이 대상에 이미 있을 때만 호출한다). */
@@ -75,7 +77,7 @@ public final class TableDdl {
         }
         if (type == DataType.bool && (lower.equals("true") || lower.equals("false") || lower.equals("0") || lower.equals("1") || lower.equals("'t'") || lower.equals("'f'"))) {
             boolean on = lower.equals("true") || lower.equals("1") || lower.equals("'t'");
-            return (to == Dbms.oracle) || to == Dbms.sqlserver ? (on ? "1" : "0") : (on ? "TRUE" : "FALSE");
+            return dev.tableflow.connection.SqlDialect.oracleTypes(to) || to == Dbms.sqlserver || to == Dbms.cubrid ? (on ? "1" : "0") : (on ? "TRUE" : "FALSE");
         }
         if (v.matches("-?\\d+(\\.\\d+)?")) return type == DataType.string ? "'" + v + "'" : (type == DataType.integer || type == DataType.decimal) ? v : null;
         if (from == Dbms.sqlserver && v.matches("N'([^']|'')*'")) v = v.substring(1);
@@ -86,7 +88,7 @@ public final class TableDdl {
 
     /** 적재 영수증 테이블(infra/jdbc/*-receipts.sql과 동일 구조). */
     public static String receiptsTable(Dbms db, String schema) {
-        String text = (db == Dbms.oracle) ? "VARCHAR2" : "VARCHAR";
+        String text = dev.tableflow.connection.SqlDialect.oracleTypes(db) ? "VARCHAR2" : "VARCHAR";
         return "CREATE TABLE " + quote(db, schema) + "." + quote(db, "tableflow_load_receipts") + " (\n    request_id " + text + "(36) PRIMARY KEY,\n    payload_hash "
             + text + "(64) NOT NULL,\n    table_name " + text + "(128) NOT NULL,\n    inserted_rows INTEGER NOT NULL\n)" + (family(db) ? " ENGINE=InnoDB" : "");
     }
@@ -96,28 +98,29 @@ public final class TableDdl {
             case string -> {
                 int n = c.size() > 0 ? c.size() : 255;
                 yield switch (db) {
-                    case oracle -> { if (n > 4000) throw new IllegalArgumentException("Oracle VARCHAR2는 최대 4000자라 이 문자열 컬럼은 생성할 수 없습니다: " + c.name()); yield "VARCHAR2(" + n + " CHAR)"; }
+                    case oracle, tibero -> { if (n > 4000) throw new IllegalArgumentException("이관 테이블의 VARCHAR2 생성은 최대 4000자로 제한합니다: " + c.name()); yield "VARCHAR2(" + n + " CHAR)"; }
+                    case cubrid -> "VARCHAR(" + Math.min(n, 1_073_741_823) + ")";
                     case sqlserver -> n > 4000 ? "NVARCHAR(MAX)" : "NVARCHAR(" + n + ")";
                     case postgresql -> n > 10_000_000 ? "TEXT" : "VARCHAR(" + n + ")";
                     default -> n > 16_000 ? "LONGTEXT" : "VARCHAR(" + n + ")";
                 };
             }
             case integer -> {
-                if (c.size() > 19) { int p = Math.min(c.size(), (db == Dbms.oracle) || db == Dbms.sqlserver ? 38 : 65); yield decimal(db, p, 0); }
-                yield (db == Dbms.oracle) ? "NUMBER(19)" : "BIGINT";
+                if (c.size() > 19) { int p = Math.min(c.size(), dev.tableflow.connection.SqlDialect.oracleTypes(db) || db == Dbms.sqlserver || db == Dbms.cubrid ? 38 : 65); yield decimal(db, p, 0); }
+                yield dev.tableflow.connection.SqlDialect.oracleTypes(db) ? "NUMBER(19)" : "BIGINT";
             }
             case decimal -> {
-                int p = c.size() > 0 && c.size() <= ((db == Dbms.oracle) || db == Dbms.sqlserver ? 38 : 65) ? c.size() : 38;
+                int p = c.size() > 0 && c.size() <= (dev.tableflow.connection.SqlDialect.oracleTypes(db) || db == Dbms.sqlserver || db == Dbms.cubrid ? 38 : 65) ? c.size() : 38;
                 int s = c.scale() > 0 ? Math.min(c.scale(), p) : Math.min(10, p);
                 yield decimal(db, p, s);
             }
             case date -> "DATE";
-            case datetime -> switch (db) { case sqlserver -> "DATETIME2(6)"; case oracle, postgresql -> "TIMESTAMP(6)"; default -> "DATETIME(6)"; };
-            case bool -> switch (db) { case sqlserver -> "BIT"; case oracle -> "NUMBER(1)"; default -> "BOOLEAN"; };
+            case datetime -> switch (db) { case cubrid -> "DATETIME"; case sqlserver -> "DATETIME2(6)"; case oracle, tibero, postgresql -> "TIMESTAMP(6)"; default -> "DATETIME(6)"; };
+            case bool -> switch (db) { case cubrid -> "SMALLINT"; case sqlserver -> "BIT"; case oracle, tibero -> "NUMBER(1)"; default -> "BOOLEAN"; };
         };
     }
     private static String decimal(Dbms db, int p, int s) {
-        return switch (db) { case oracle -> "NUMBER(" + p + "," + s + ")"; case postgresql -> "NUMERIC(" + p + "," + s + ")"; default -> "DECIMAL(" + p + "," + s + ")"; };
+        return switch (db) { case oracle, tibero -> "NUMBER(" + p + "," + s + ")"; case postgresql -> "NUMERIC(" + p + "," + s + ")"; default -> "DECIMAL(" + p + "," + s + ")"; };
     }
     private static <T> List<T> concat(List<T> a, List<T> b) { var r = new ArrayList<>(a); r.addAll(b); return r; }
 }

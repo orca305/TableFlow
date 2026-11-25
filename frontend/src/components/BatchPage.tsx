@@ -35,7 +35,8 @@ export default function BatchPage({ server, saved, reloadSaved, onHistoryChanged
   const active = job?.state === "queued" || job?.state === "running"; const working = busy || active;
   const selected = useMemo(() => tables.filter(t => picked.has(t)), [tables, picked]);
   const shown = useMemo(() => tables.filter(t => t.toLowerCase().includes(filter.trim().toLowerCase())), [tables, filter]);
-  const body = () => ({ source: srcV!.connection, sourceSchema: schema, target: dstV!.connection, targetSchema: dstSchema, tables: selected, preserveKeys: keys, copyIndexes: idx, copyDefaults: defs,
+  const supportsIdentity = server?.drivers.find(d => d.dbms === dstV?.connection.dbms)?.capabilities?.preserveKeys !== false;
+  const body = () => ({ source: srcV!.connection, sourceSchema: schema, target: dstV!.connection, targetSchema: dstSchema, tables: selected, preserveKeys: keys && supportsIdentity, copyIndexes: idx, copyDefaults: defs,
     copyForeignKeys: fks, ifExists, chunkSize: chunkText === "" ? undefined : chunk });
   function reset() { setPlan(null); setConfirmed(false); setRequestId(""); setJob(null); setError(""); }
   async function guarded(action: () => Promise<void>) {
@@ -113,9 +114,10 @@ export default function BatchPage({ server, saved, reloadSaved, onHistoryChanged
         {dstV && <div className="form">
           <label className="f">스키마<select aria-label="일괄 대상 스키마" disabled={working} value={dstSchema} onChange={e => { setDstSchema(e.target.value); reset(); }}><option value="">선택하세요</option>{dstSchemas.map(s => <option key={s} value={s}>{s}</option>)}</select></label>
         </div>}
-        <div className="split"><div className="sp-h">이관 옵션<Help text="대상 테이블은 원본 컬럼 구조로 새로 만들며, 이름은 대상 DB 관례(PostgreSQL 소문자, Oracle 대문자)에 맞춰 영문·숫자·_로 변환됩니다." /></div>
+        {!supportsIdentity && <p className="mut">기존 자동 증가 컬럼의 원본 값 지정은 지원하지 않습니다. 신규 일반 컬럼으로 생성하는 테이블에는 원본 키 값을 이관할 수 있습니다.</p>}
+        <div className="split"><div className="sp-h">이관 옵션<Help text="대상 테이블은 원본 컬럼 구조로 새로 만들며, 이름은 대상 DB 관례(PostgreSQL·CUBRID 소문자, Oracle·Tibero 대문자)에 맞춰 영문·숫자·_로 변환됩니다." /></div>
           <div className="row">
-            <span className="check"><input id="b-keys" type="checkbox" checked={keys} disabled={working} onChange={e => { setKeys(e.target.checked); reset(); }} /><label htmlFor="b-keys">원본 기본 키(PK) 유지</label></span>
+            <span className="check"><input id="b-keys" type="checkbox" checked={keys && supportsIdentity} disabled={working || !supportsIdentity} onChange={e => { setKeys(e.target.checked); reset(); }} /><label htmlFor="b-keys">원본 기본 키(PK) 유지</label></span>
             <span className="check"><input id="b-idx" type="checkbox" checked={idx} disabled={working} onChange={e => { setIdx(e.target.checked); reset(); }} /><label htmlFor="b-idx">인덱스 복제</label></span>
             <span className="check"><input id="b-def" type="checkbox" checked={defs} disabled={working} onChange={e => { setDefs(e.target.checked); reset(); }} /><label htmlFor="b-def">기본값 복제</label></span>
             <span className="check"><input id="b-fk" type="checkbox" checked={fks} disabled={working} onChange={e => { setFks(e.target.checked); reset(); }} /><label htmlFor="b-fk">외래 키(FK) 복제</label></span></div>
