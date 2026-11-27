@@ -20,10 +20,11 @@ class CubridIntegrationTests {
     @Autowired MigrationService migration;
     @Autowired dev.tableflow.load.MigrationVerifier verifier;
     @Autowired dev.tableflow.load.BatchMigration batch;
+    @org.junit.jupiter.api.AutoClose final dev.tableflow.state.StateDbTestSupport state = new dev.tableflow.state.StateDbTestSupport();
     @TempDir Path directory;
     private final Credentials pg = new Credentials(Dbms.postgresql, "localhost", 15432, "tableflow", "tableflow", "TableFlowTest2026", false);
     private void withCubrid(java.util.function.Consumer<Credentials> test) throws Exception {
-        var catalog = new DriverCatalog(directory.toString(), new ObjectMapper());
+        var catalog = new DriverCatalog(directory.toString(), state.dataSource());
         try {
             DriverCatalog.Entry driver;
             try (var input = Files.newInputStream(Path.of(System.getenv("TABLEFLOW_TEST_CUBRID_DRIVER")))) { driver = catalog.register(Dbms.cubrid, "fixture", input); }

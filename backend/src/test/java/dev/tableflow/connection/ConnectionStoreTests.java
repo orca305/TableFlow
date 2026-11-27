@@ -2,18 +2,25 @@ package dev.tableflow.connection;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.tableflow.connection.JdbcExplorer.*;
+import dev.tableflow.state.StateDbTestSupport;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.*;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** 파일 기반 연결 저장소의 보안 동작(암호화, 비밀번호 비반환, 접속 정보 불일치 거부)을 검증한다. 실제 DB는 필요 없다. */
+/** 연결 저장소의 보안 동작(암호화, 비밀번호 비반환, 접속 정보 불일치 거부)을 전용 상태 DB에서 검증한다. 이관 대상 DB는 필요 없다. */
 class ConnectionStoreTests {
     @TempDir Path dir;
     final ObjectMapper json = new ObjectMapper();
+    static StateDbTestSupport db;
+    @BeforeAll static void open() { db = new StateDbTestSupport(); }
+    @AfterAll static void close() throws Exception { db.close(); }
+    @BeforeEach void empty() { jdbc().sql("DELETE FROM connection").update(); }
+    static JdbcClient jdbc() { return JdbcClient.create(db.dataSource()); }
 
     ConnectionStore store(boolean passwordAllowed) {
-        return new ConnectionStore(true, passwordAllowed, dir.resolve("connections.json").toString(), dir.resolve("connections.key").toString(), "", json);
+        return new ConnectionStore(true, passwordAllowed, dir.resolve("connections.key").toString(), "", db.dataSource());
     }
     Credentials creds(String host, String user, String password) {
         return new Credentials(Dbms.postgresql, host, 15432, "tableflow", user, password, false);
@@ -36,7 +43,8 @@ class ConnectionStoreTests {
         var saved = store.save("운영 복제본", creds("localhost", "tableflow", "S3cret-Pass!"), true);
         assertTrue(saved.passwordSaved());
         assertFalse(json.writeValueAsString(store.list()).contains("S3cret"), "목록(브라우저로 가는 형태)에 비밀번호가 없어야 한다");
-        assertFalse(Files.readString(dir.resolve("connections.json")).contains("S3cret"), "파일에 평문 비밀번호가 없어야 한다");
+        String rows = String.join("\n", jdbc().sql("SELECT row_to_json(c)::text FROM connection c").query(String.class).list());
+        assertFalse(rows.contains("S3cret"), "DB에 평문 비밀번호가 없어야 한다");
         assertTrue(Files.exists(dir.resolve("connections.key")));
         assertEquals("S3cret-Pass!", store.passwordFor(withSaved(creds("localhost", "tableflow", ""), saved.id())));
         assertEquals("S3cret-Pass!", store(true).passwordFor(withSaved(creds("localhost", "tableflow", ""), saved.id())), "새 인스턴스(재시작)에서도 같은 키 파일로 복호화");
@@ -80,12 +88,8 @@ class ConnectionStoreTests {
         var store = store(true);
         var a = store.save("A", creds("localhost", "ua", "pw-a"), true);
         var b = store.save("B", creds("localhost", "ub", "pw-b"), true);
-        var file = dir.resolve("connections.json");
-        var tree = json.readTree(Files.readString(file));
-        String cipherA = null;
-        for (var n : tree) if (n.get("id").asText().equals(a.id())) cipherA = n.get("password").asText();
-        for (var n : tree) if (n.get("id").asText().equals(b.id())) ((com.fasterxml.jackson.databind.node.ObjectNode) n).put("password", cipherA);
-        Files.writeString(file, json.writeValueAsString(tree));
+        jdbc().sql("UPDATE connection SET password_enc = (SELECT password_enc FROM connection WHERE id = :a) WHERE id = :b")
+            .param("a", java.util.UUID.fromString(a.id())).param("b", java.util.UUID.fromString(b.id())).update();
         assertEquals("CONNECTION_KEY", code(() -> store.passwordFor(withSaved(creds("localhost", "ub", ""), b.id()))));
     }
 
@@ -108,6 +112,35 @@ class ConnectionStoreTests {
         var typed = new Credentials(Dbms.postgresql, "localhost", 15432, "tableflow", "tableflow", "typed-pw", false, saved.id());
         assertEquals("typed-pw", explorer.properties(typed).getProperty("password"), "입력한 비밀번호가 있으면 그것을 쓴다");
         assertEquals("", explorer.properties(creds("localhost", "tableflow", "")).getProperty("password"), "저장된 연결 ID가 없으면 빈 비밀번호 그대로");
+    }
+
+    @Test void listsInSavedOrderFindsSavedIdAndSharesStateBetweenServers() {
+        var first = store(true); var second = store(true);
+        var a = first.save("A", creds("localhost", "ua", "pw"), true);
+        first.save("B", creds("localhost", "ub", ""), false);
+        assertEquals(java.util.List.of("A", "B"), second.list().stream().map(ConnectionStore.Saved::name).toList());
+        second.save("A", creds("localhost", "ua", ""), true);
+        assertEquals(java.util.List.of("B", "A"), first.list().stream().map(ConnectionStore.Saved::name).toList(), "갱신하면 맨 뒤로");
+        assertEquals(a.id(), first.findSavedId(creds("LOCALHOST", "ua", "")), "호스트는 대소문자를 구분하지 않는다");
+        assertNull(first.findSavedId(creds("localhost", "ub", "")), "비밀번호를 저장하지 않은 연결은 제외");
+        assertNull(first.findSavedId(creds("localhost", "UA", "")));
+        for (String bad : java.util.List.of("not-a-uuid", "------------------------------------")) {
+            assertFalse(first.delete(bad));
+            assertEquals("CONNECTION_NOT_FOUND", code(() -> first.passwordFor(withSaved(creds("localhost", "ua", ""), bad))));
+        }
+        assertThrows(IllegalArgumentException.class, () -> first.save("C", new Credentials(Dbms.postgresql, "localhost", 1, "d", "u", "", false, null, "------------------------------------"), false));
+    }
+
+    @Test void concurrentServersKeepTheLimitAndOneRowPerName() throws Exception {
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(6);
+        try {
+            for (int i = 0; i < 99; i++) store(true).save("n" + i, creds("localhost", "u" + i, ""), false);
+            var tasks = new java.util.ArrayList<java.util.concurrent.Callable<Boolean>>();
+            for (int i = 0; i < 12; i++) { int n = i; tasks.add(() -> { try { store(true).save(n < 6 ? "same" : "extra" + n, creds("localhost", "x", ""), false); return true; } catch (IllegalArgumentException limit) { return false; } }); }
+            for (var result : pool.invokeAll(tasks)) result.get();
+            assertEquals(100, store(true).list().size());
+            assertTrue(store(true).list().stream().filter(s -> s.name().equals("same")).count() <= 1);
+        } finally { pool.shutdownNow(); }
     }
 
     @Test void credentialsJsonAcceptsOptionalSavedIdAndStaysRedacted() throws Exception {

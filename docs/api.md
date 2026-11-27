@@ -56,7 +56,7 @@ OCR source에는 `page`(PDF 페이지, 이미지 null), `provider`(mock/local/ex
 | 409 | 같은 적재 요청 ID에 다른 내용 |
 | 413 | 파일 또는 JSON 요청 크기 초과 |
 | 422 | 출력 전 검증 실패 (`issues` 포함) |
-| 503 `STATE_DB_UNAVAILABLE` | 상태 DB에 접속할 수 없음(작업 이력 조회 등). 접속 정보는 돌려주지 않음 |
+| 503 `STATE_DB_UNAVAILABLE` | 상태 DB에 접속할 수 없음(작업 이력·저장 연결·드라이버 조회 등). 접속 정보는 돌려주지 않음 |
 | 429 | 요청 횟수(IP당 POST, 기본 120회/분, `TABLEFLOW_POSTS_PER_MINUTE`) 또는 동시 처리(4건) 제한 (`Retry-After: 60`, 허용 출처에는 CORS 헤더 포함) |
 | 500 | 예상하지 못한 처리 실패 |
 | 502 | OCR 응답 형식·계약 오류 |
@@ -120,7 +120,7 @@ Credentials: `{dbms:oracle|postgresql|mysql|mariadb,host,port,database,username,
 |---|---|
 | `GET /connections/drivers` | 기존 필드 + `savedEnabled`, `savePasswordEnabled`, `defaultChunkSize` |
 | `GET /connections/saved` | 저장된 연결 목록. **비밀번호는 포함하지 않고** `passwordSaved`만 알린다 |
-| `POST /connections/saved` | `{name, connection, savePassword}` — 연결 저장·갱신. `savePassword=true`일 때만 비밀번호를 AES-256-GCM으로 암호화해 서버 로컬 파일에 보관(비워 보내면 기존 비밀번호 유지) |
+| `POST /connections/saved` | `{name, connection, savePassword}` — 연결 저장·갱신. `savePassword=true`일 때만 비밀번호를 AES-256-GCM으로 암호화해 상태 DB에 보관(비워 보내면 기존 비밀번호 유지) |
 | `DELETE /connections/saved/{id}` | 저장된 연결 삭제 |
 | `POST /connections/count` | `{connection, schema, table}` → `{rows}` 전체 행 수(읽기 전용) |
 | `POST /connections/migrate/analyze` | `MigrateRequest` → `{sourceRows, maxRows, columns[{source,target,sourceType,targetType,conversion,level,detail}], notes, warnings, createsTable, ddl}`. 값은 검증하지 않고 컬럼 호환성만 판정. `level`은 ok/info/warn/error. 길이 위험이 있는 문자열 컬럼은 원본의 실제 최대 길이도 조회 |

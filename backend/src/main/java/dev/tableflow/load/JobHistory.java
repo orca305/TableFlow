@@ -55,6 +55,9 @@ public class JobHistory {
         else if (e instanceof JdbcExplorer.Failure f) { code = f.code; message = f.getMessage(); }
         else if (e instanceof InvalidTable) { code = "VALIDATION_FAILED"; message = e.getMessage(); }
         else if (e instanceof IllegalArgumentException) { code = "INVALID_INPUT"; message = e.getMessage(); }
+        else if (e instanceof org.springframework.dao.DataAccessResourceFailureException || e instanceof org.springframework.dao.TransientDataAccessException) {
+            code = "STATE_DB_UNAVAILABLE"; message = "상태 DB를 사용할 수 없습니다. PostgreSQL 실행 상태를 확인한 뒤 다시 시도해주세요.";
+        }
         return new String[]{code, message == null ? "" : message.length() > 300 ? message.substring(0, 300) : message};
     }
     private static long elapsed(long t0) { return (System.nanoTime() - t0) / 1_000_000; }

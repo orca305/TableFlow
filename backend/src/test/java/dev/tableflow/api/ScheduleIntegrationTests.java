@@ -17,10 +17,16 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** 반복 실행: 등록 규칙, 시각이 되면 실행, 전체 교체(실행 전 대상 비움), 일괄 이관 스케줄을 실서버(MySQL→MariaDB)에서 확인한다. */
 @SpringBootTest(properties={"tableflow.jdbc.enabled=true","tableflow.jdbc.load-enabled=true",
-    "tableflow.connections.file=build/tmp/sched-test/connections.json","tableflow.connections.key-file=build/tmp/sched-test/connections.key",
+    "tableflow.connections.key-file=build/tmp/sched-test/connections.key",
     "tableflow.schedules.file=build/tmp/sched-test/schedules.json","tableflow.jobs.file=build/tmp/sched-test/jobs.json"})
 @EnabledIfEnvironmentVariable(named="TABLEFLOW_TEST_JDBC",matches="true")
 class ScheduleIntegrationTests {
+    /** 저장 연결이 다른 시험의 암호 키와 섞이지 않도록 일회용 상태 스키마를 쓴다. */
+    static dev.tableflow.state.StateDbTestSupport state;
+    @org.springframework.test.context.DynamicPropertySource static void isolatedState(org.springframework.test.context.DynamicPropertyRegistry registry) {
+        state = new dev.tableflow.state.StateDbTestSupport(); registry.add("tableflow.state-db.schema", state::schema);
+    }
+    @AfterAll static void dropState() throws Exception { if (state != null) state.close(); }
     @Autowired ScheduleService schedules; @Autowired ConnectionStore connections; @Autowired JdbcExplorer explorer; @Autowired ObjectMapper json;
 
     Credentials plain(Dbms db) {

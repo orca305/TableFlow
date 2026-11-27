@@ -20,9 +20,10 @@ class SqlServerIntegrationTests {
     @Autowired JdbcExplorer explorer;
     @Autowired MigrationService migration;
     @Autowired dev.tableflow.load.MigrationVerifier verifier;
+    @org.junit.jupiter.api.AutoClose final dev.tableflow.state.StateDbTestSupport state = new dev.tableflow.state.StateDbTestSupport();
     @TempDir Path directory;
     private void withSql(java.util.function.Consumer<Credentials> test) throws Exception {
-        var catalog = new DriverCatalog(directory.toString(), new ObjectMapper());
+        var catalog = new DriverCatalog(directory.toString(), state.dataSource());
         try {
             DriverCatalog.Entry driver;
             try (var input = Files.newInputStream(Path.of(System.getenv("TABLEFLOW_TEST_SQLSERVER_DRIVER")))) { driver = catalog.register(Dbms.sqlserver, "fixture", input); }
@@ -100,7 +101,7 @@ class SqlServerIntegrationTests {
     @Test void migratesUnicodeAndReplaysSameRequestWithoutDuplicates() throws Exception {
         String path = System.getenv("TABLEFLOW_TEST_SQLSERVER_DRIVER");
         assertNotNull(path, "TABLEFLOW_TEST_SQLSERVER_DRIVER에 Microsoft JDBC JAR 경로를 지정해야 합니다.");
-        var catalog = new DriverCatalog(directory.toString(), new ObjectMapper());
+        var catalog = new DriverCatalog(directory.toString(), state.dataSource());
         try {
             DriverCatalog.Entry driver;
             try (var input = Files.newInputStream(Path.of(path))) { driver = catalog.register(Dbms.sqlserver, "fixture", input); }

@@ -19,11 +19,12 @@ import static org.junit.jupiter.api.Assertions.*;
 class TiberoIntegrationTests {
     @Autowired JdbcExplorer explorer;
     @Autowired MigrationService migration;
+    @org.junit.jupiter.api.AutoClose final dev.tableflow.state.StateDbTestSupport state = new dev.tableflow.state.StateDbTestSupport();
     @TempDir Path directory;
     @Test void migratesWithRegisteredVendorDriverAndReplays() throws Exception {
         String jar=System.getenv("TABLEFLOW_TEST_TIBERO_DRIVER");
         assertNotNull(jar,"정식 Tibero JDBC JAR 경로를 지정해주세요.");
-        var catalog=new DriverCatalog(directory.toString(),new ObjectMapper());
+        var catalog=new DriverCatalog(directory.toString(),state.dataSource());
         try {
             DriverCatalog.Entry driver;
             try(var input=Files.newInputStream(Path.of(jar))){driver=catalog.register(Dbms.tibero,"fixture",input);}

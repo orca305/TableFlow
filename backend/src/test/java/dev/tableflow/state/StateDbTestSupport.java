@@ -19,6 +19,7 @@ public final class StateDbTestSupport implements AutoCloseable {
             System.getenv("TABLEFLOW_STATE_DB_PASSWORD"), schema));
     }
     public HikariDataSource dataSource() { return dataSource; }
+    public String schema() { return schema; }
     /** 같은 스키마를 보는 별도의 연결 묶음(다른 서버 인스턴스를 흉내 낼 때). */
     public HikariDataSource another() { return open(schema); }
 

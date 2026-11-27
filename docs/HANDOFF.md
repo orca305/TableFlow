@@ -292,4 +292,14 @@ npx playwright test tests/migration.spec.ts tests/db-to-file.spec.ts    # 기대
 - 바뀐 점: 이력을 읽지 못하면 빈 목록 대신 503 `STATE_DB_UNAVAILABLE`(`ApiErrors`가 Spring의 자원 실패·일시 실패 예외를 변환, 이후 저장소에도 적용). 상태 DB가 멈춘 동안에는 작업마다 이력 저장 시도가 접속 대기(최대 5초)만큼 늦어진다.
 - **기존 `data/job-history.jsonl`은 아직 가져오지 않는다**(1-f). 그때까지 이전 이력은 화면에 보이지 않으며 파일은 그대로 남는다. `tableflow.history.file` 설정은 1-f에서 가져오기 원본 위치로 다시 쓴다.
 - 시험 공용 도구 `StateDbTestSupport`(일회용 스키마). 다음 저장소 시험도 이것을 쓴다.
-- 검증: 백엔드 전체(6종 DB 실서버 설정) 230개 중 실패 0, 건너뜀 7(성능 측정 2, Tibero 1, 로컬 MySQL 4). 신규 `JobHistoryTests`는 실제 PostgreSQL에서 순서·정리·동시 기록·저장 실패 격리·DB 중단을 확인 / Playwright 42개 중 38 통과, 4 건너뜀, 실패 0(실행 뒤 상태 DB의 `job_history`에 성공·실패 행이 기록된 것을 확인). CI는 푸시 전이라 실행하지 않았다.
+- 검증: 백엔드 전체(6종 DB 실서버 설정) 230개 중 실패 0, 건너뜀 7(성능 측정 2, Tibero 1, 로컬 MySQL 4). 신규 `JobHistoryTests`는 실제 PostgreSQL에서 순서·정리·동시 기록·저장 실패 격리·DB 중단을 확인 / Playwright 42개 중 38 통과, 4 건너뜀, 실패 0(실행 뒤 상태 DB의 `job_history`에 성공·실패 행이 기록된 것을 확인). 푸시 후 GitHub CI(1d39c1f) 두 작업 모두 성공.
+
+## 28. 2026-11-27 EAI 1-c: 저장 연결·JDBC 드라이버를 상태 DB로
+
+- `connection`·`jdbc_driver` 표(Flyway `V3`). API와 화면 동작은 유지한다(개수 제한 100/32, 같은 이름 갱신 시 목록 맨 뒤, 접속 정보가 다르면 저장 비밀번호 거부, 드라이버 해시 검증).
+- **암호 키는 DB에 넣지 않는다**(`TABLEFLOW_SECRET_KEY` 또는 `data/connections.key`). 여러 서버가 같은 상태 DB를 쓰면 **같은 키를 지정해야** 저장 비밀번호를 풀 수 있다. DB 백업과 키 백업은 따로 한다.
+- 드라이버 원본은 DB, `data/drivers/`는 사본이다. 사본이 없으면 DB에서 복원하고, 사본이 바뀌어 있으면 지금처럼 거부한다. 이미 불러온 드라이버는 상태 DB가 멈춰도 쓸 수 있다. 저장 연결의 비밀번호 조회는 DB가 필요하므로 상태 DB가 멈추면 새 접속에 쓸 수 없다.
+- 상태 DB 오류는 API에서 503, 백그라운드 작업 메시지에서 `STATE_DB_UNAVAILABLE`로 표시한다.
+- **기존 `connections.json`·`drivers/`는 아직 가져오지 않는다**(1-f). 그때까지 이전 연결·드라이버는 보이지 않으며 파일은 남는다. 이전 파일에서 작업·스케줄(아직 파일)이 가리키는 저장 연결 id는 새 DB에 없어 비밀번호를 다시 입력해야 한다.
+- `CLAUDE.md`의 저장 비밀번호 규칙 문구는 사용자 승인(2026-11-27) 후 상태 DB 기준으로 고쳤다.
+- 검증: 백엔드 전체(6종 DB 실서버 설정) 234개 중 실패 0, 건너뜀 7(성능 측정 2, Tibero 1, 로컬 MySQL 4). 저장소 시험은 실제 PostgreSQL에서 평문 부재, 다른 항목의 암호문 거부, 서버 두 개 동시 저장의 제한, 다른 서버의 드라이버 복원, 손상 원본 거부를 확인했다. Playwright 42개 중 38 통과, 4 건너뜀, 실패 0. CI는 푸시 전이다. Tibero 시험은 설정만 바꾸고 실행하지 않았다.

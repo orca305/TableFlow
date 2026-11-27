@@ -13,11 +13,12 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 기존 전용 컨테이너에서 반입 드라이버 경로만 조회 검증한다. 운영 DB를 사용하지 않는다. */
 @EnabledIfEnvironmentVariable(named="TABLEFLOW_TEST_JDBC", matches="true")
 class DriverCatalogIntegrationTests {
+    @org.junit.jupiter.api.AutoClose final dev.tableflow.state.StateDbTestSupport state = new dev.tableflow.state.StateDbTestSupport();
     @TempDir Path directory;
     @ParameterizedTest @EnumSource(value=Dbms.class, names={"oracle","postgresql","mysql","mariadb"})
     void connectsWithRegisteredJar(Dbms db) throws Exception {
         org.junit.jupiter.api.Assumptions.assumeTrue(Arrays.asList(System.getenv().getOrDefault("TABLEFLOW_TEST_JDBC_DBMS", "postgresql,mysql,mariadb").split(",")).contains(db.name()));
-        var catalog = new DriverCatalog(directory.toString(), new ObjectMapper());
+        var catalog = new DriverCatalog(directory.toString(), state.dataSource());
         try {
             Path jar = Path.of(Class.forName(db.driver).getProtectionDomain().getCodeSource().getLocation().toURI());
             DriverCatalog.Entry entry;
