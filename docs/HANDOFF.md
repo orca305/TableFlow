@@ -283,3 +283,4 @@ npx playwright test tests/migration.spec.ts tests/db-to-file.spec.ts    # 기대
 - 코드: `dev.tableflow.state`(설정 검사, `DataSource`, 상태 확인), `db/migration/V1__state_foundation.sql`(`app_meta`), `/api/v1/health`에 `stateDb`(중단 시 503). 설정이 없거나 접속할 수 없으면 서버가 안내 후 시작하지 않는다.
 - 아직 파일에 저장: 저장 연결·드라이버·스케줄·작업·이력(1-b~1-f). **1-f까지 끝나기 전에는 배포하지 말 것.**
 - 검증: 백엔드 전체(6종 DB 실서버 설정) 228개 중 실패 0, 건너뜀 7(성능 측정 2, Tibero 1, 로컬 MySQL 4). 실제 jar로 설정 없음·접속 불가 시 시작 거부(로그에 비밀번호 없음), 정상 시작 200 → DB 중지 503 → 재시작 200 확인. Playwright 42개 중 38 통과, 4 건너뜀, 실패 0. 바뀐 CI는 푸시 전이라 GitHub에서 실행하지 않았다. `scripts/backend.ps1`은 이 PC의 개발용 `state-db`로 실제 시작해 상태 확인 200과 V1 적용을 확인했다(실행 로그에 비밀번호 없음). Linux에서는 실행하지 않았다.
+- **GitHub 첫 실행(c668b07, 실행 45947322628)**: `verify` 성공. `database`는 컨테이너 기동·Oracle 준비·백엔드 실서버 테스트·프런트 빌드까지 성공했고 **DB 브라우저 테스트 단계가 실패**했다. 로그는 로그인해야 볼 수 있어 원인 미확인. 실패 내용이 공개 주석에 남도록 CI에 `--reporter=list,github`를 추가했다(아직 커밋 전).

@@ -116,7 +116,8 @@ jobs:
         env:
           TABLEFLOW_JDBC_ENABLED: 'true'
           TABLEFLOW_JDBC_LOAD_ENABLED: 'true'
-        run: npx playwright test batch.spec.ts database.spec.ts db-to-file.spec.ts migration.spec.ts schedule.spec.ts
+        # github 보고기는 실패한 시험과 이유를 로그인 없이 볼 수 있는 실행 주석(annotation)으로 남긴다.
+        run: npx playwright test batch.spec.ts database.spec.ts db-to-file.spec.ts migration.spec.ts schedule.spec.ts --reporter=list,github
       - name: Database container logs
         if: failure()
         run: docker compose -f infra/jdbc/compose.yml --profile oracle logs --tail 200
