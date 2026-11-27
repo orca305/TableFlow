@@ -40,7 +40,9 @@ jobs:
           TABLEFLOW_TEST_LOCAL_OCR: 'true'
         run: python -m pytest -q
       - name: Start isolated MySQL
-        run: docker compose up -d --wait --wait-timeout 180
+        run: docker compose up -d --wait --wait-timeout 180 mysql
+      - name: Start state database for tests
+        run: docker compose -f infra/state/compose.yml up -d --wait --wait-timeout 180
       - name: Backend tests and executable jar
         working-directory: backend
         run: bash gradlew test bootJar
@@ -93,6 +95,8 @@ jobs:
         run: |
           printf '%s\n' 'WHENEVER SQLERROR EXIT FAILURE' 'CREATE TABLE tf_warmup (id INTEGER PRIMARY KEY);' 'INSERT INTO tf_warmup VALUES (1);' 'COMMIT;' 'DROP TABLE tf_warmup PURGE;' 'EXIT' \
             | timeout 300 docker exec -i tableflow-jdbc-tests-oracle-1 sqlplus -s tableflow/TableFlowTest2026@//localhost/FREEPDB1
+      - name: Start state database for tests
+        run: docker compose -f infra/state/compose.yml up -d --wait --wait-timeout 180
       - name: Backend tests against real databases and executable jar
         working-directory: backend
         run: bash gradlew test bootJar

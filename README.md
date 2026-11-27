@@ -95,7 +95,14 @@ scripts/     Windows 실행 보조 스크립트
 
 ## 시작하기
 
-필수 환경: **JDK 21**, **Node.js 20.9 이상**, (OCR 사용 시) **Python 3.13**. Gradle은 저장소의 wrapper를 씁니다.
+필수 환경: **JDK 21**, **Node.js 20.9 이상**, **PostgreSQL(상태 DB, 개발에서는 Docker)**, (OCR 사용 시) **Python 3.13**. Gradle은 저장소의 wrapper를 씁니다.
+
+먼저 상태 DB를 준비합니다. 백엔드는 상태 DB가 없으면 시작하지 않습니다. `.env.example`을 `.env`로 복사해 비밀번호들을 바꾼 뒤 실행하세요.
+
+```powershell
+cd C:\dev\TableFlow
+docker compose up -d --wait state-db   # 개발용 PostgreSQL, 127.0.0.1:15442
+```
 
 첫 번째 터미널 — 백엔드(포트 8080):
 
@@ -113,7 +120,7 @@ npm run dev
 ```
 
 - 화면 <http://localhost:3100> · API 상태 <http://localhost:8080/api/v1/health>
-- Linux/macOS: `JAVA_HOME`을 JDK 21로 설정하고 `cd backend && bash gradlew bootRun`
+- Linux/macOS: `JAVA_HOME`을 JDK 21로, `TABLEFLOW_STATE_DB_URL`(`jdbc:postgresql://127.0.0.1:15442/tableflow`)·`TABLEFLOW_STATE_DB_USER`(`tableflow`)·`TABLEFLOW_STATE_DB_PASSWORD`를 설정하고 `cd backend && bash gradlew bootRun`
 - 처음 쓴다면 화면의 **샘플 데이터로 시작**으로 파일 변환 흐름을 바로 체험할 수 있습니다
 
 ### DB 기능 켜기
@@ -142,10 +149,12 @@ Provider를 생략하면 고정 데이터를 돌려주는 mock이 실행됩니�
 
 ## 테스트 실행
 
-실서버 없이 돌리는 기본 검증:
+이관 대상 DB 없이 돌리는 기본 검증(상태 DB 시험용 컨테이너는 필요합니다):
 
 ```powershell
-cd C:\dev\TableFlow\backend
+cd C:\dev\TableFlow
+docker compose -f infra/state/compose.yml up -d --wait   # 시험용 상태 DB, 127.0.0.1:15443
+cd backend
 .\gradlew.bat test bootJar
 cd ..\frontend
 npm ci
@@ -172,6 +181,7 @@ $env:TABLEFLOW_TEST_JDBC='true'; $env:TABLEFLOW_TEST_JDBC_DBMS='oracle,postgresq
 ## 설정과 제한
 
 - 프런트엔드: `frontend/.env.example`을 `.env.local`로 복사해 `NEXT_PUBLIC_API_URL` 설정
+- 상태 DB(필수, 기본값 없음): `TABLEFLOW_STATE_DB_URL`, `TABLEFLOW_STATE_DB_USER`, `TABLEFLOW_STATE_DB_PASSWORD`, `TABLEFLOW_STATE_DB_SCHEMA`(`tableflow`). PostgreSQL만 지원하며 원격 주소는 `sslmode=verify-full`이 필요합니다
 - 백엔드: `PORT`(8080), `TABLEFLOW_FRONTEND_ORIGIN`(`http://localhost:3100`), `TABLEFLOW_OCR_URL`(`http://127.0.0.1:8000`), `TABLEFLOW_JDBC_ENABLED`, `TABLEFLOW_JDBC_LOAD_ENABLED`, `TABLEFLOW_SECRET_KEY`(저장 연결 암호화 키. 없으면 `data/connections.key`를 자동 생성). 괄호는 기본값입니다
 - OCR: `TABLEFLOW_OCR_PROVIDER`(mock), `TABLEFLOW_OCR_LANGUAGE`(korean), `TABLEFLOW_OCR_TIMEOUT_SECONDS`
 - 파일 최대 10MB, 10,000 데이터 행, 100열. PDF 최대 20페이지, OCR 이미지 최대 2,000만 픽셀. JSON 요청 최대 32MB, IP당 POST 120회/분(`TABLEFLOW_POSTS_PER_MINUTE`로 변경), 동시 처리 4건

@@ -5,7 +5,7 @@
 ## 로컬 실행
 
 1. Docker Desktop을 실행합니다. `.env.example`을 `.env`로 복사하고 두 비밀번호를 각각 다른 임의 값으로 바꿉니다. `.env`는 Git에서 제외됩니다. 이미 초기화한 Docker 볼륨의 비밀번호는 파일 수정만으로 바뀌지 않습니다.
-2. 저장소 루트에서 `docker compose up -d --wait`를 실행합니다. 기존 프로젝트와 분리된 MySQL이 `127.0.0.1:3307`에서 실행됩니다. 최초 볼륨 생성 시 `infra/mysql/init.sql`로 샘플 대상과 영수증 테이블을 준비합니다.
+2. 저장소 루트에서 `docker compose up -d --wait mysql`를 실행합니다. 기존 프로젝트와 분리된 MySQL이 `127.0.0.1:3307`에서 실행됩니다. 최초 볼륨 생성 시 `infra/mysql/init.sql`로 샘플 대상과 영수증 테이블을 준비합니다.
 3. 다음 PowerShell에서 백엔드를 실행합니다.
 
 ```powershell
@@ -65,7 +65,7 @@ MySQL 8.4.13 Docker를 별도로 실행하여 검증했습니다. Java 통합 �
 
 ```powershell
 cd C:\dev\TableFlow
-docker compose up -d --wait
+docker compose up -d --wait mysql
 . .\scripts\enable-local-db.ps1
 $env:TABLEFLOW_MYSQL_PASSWORD=$env:TABLEFLOW_LOAD_PASSWORD
 $env:TABLEFLOW_TEST_MYSQL='true'

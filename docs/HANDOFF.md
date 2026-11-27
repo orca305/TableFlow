@@ -276,3 +276,10 @@ npx playwright test tests/migration.spec.ts tests/db-to-file.spec.ts    # 기대
 - 사용자 요구: 인터넷 없이 설치·동작하려면 의존성 파일, 도구, DB까지 함께 설치하는 형태여야 한다. [EAI 설계](EAI_ARCHITECTURE.md) §4.3과 [상태 DB 설계](EAI_STEP1_STATE_DB.md) §4·§10에 반영했다. 구현 전이다.
 - 결정: Windows와 Linux 동시 지원(Linux는 RHEL 계열부터), 상태 DB는 내장 PostgreSQL만, 첫 설치 패키지는 2단계 직후 최소판.
 - 미확정: OS 버전, 설치 시험용 가상 장비, 구성요소별 재배포 조건, 기존 사내 브로커 연결 선택지.
+
+## 26. 2026-11-27 EAI 1-a: 상태 DB 접속·Flyway·상태 확인
+
+- **지금부터 백엔드 실행과 모든 Spring 테스트에 상태 DB가 필요하다.** §2의 명령 전에 시험용은 `docker compose -f infra/state/compose.yml up -d --wait`(15443, `build.gradle`·`playwright.config.ts`가 기본으로 사용), 개발용은 `.env`에 `TABLEFLOW_STATE_DB_PASSWORD`를 넣고 `docker compose up -d --wait state-db`(15442, `scripts/backend.ps1`이 사용). 기존 `.env`에는 이 줄을 추가해야 한다. 루트 compose에서 MySQL만 띄울 때는 `docker compose up -d --wait mysql`.
+- 코드: `dev.tableflow.state`(설정 검사, `DataSource`, 상태 확인), `db/migration/V1__state_foundation.sql`(`app_meta`), `/api/v1/health`에 `stateDb`(중단 시 503). 설정이 없거나 접속할 수 없으면 서버가 안내 후 시작하지 않는다.
+- 아직 파일에 저장: 저장 연결·드라이버·스케줄·작업·이력(1-b~1-f). **1-f까지 끝나기 전에는 배포하지 말 것.**
+- 검증: 백엔드 전체(6종 DB 실서버 설정) 228개 중 실패 0, 건너뜀 7(성능 측정 2, Tibero 1, 로컬 MySQL 4). 실제 jar로 설정 없음·접속 불가 시 시작 거부(로그에 비밀번호 없음), 정상 시작 200 → DB 중지 503 → 재시작 200 확인. Playwright 42개 중 38 통과, 4 건너뜀, 실패 0. 바뀐 CI는 푸시 전이라 GitHub에서 실행하지 않았다. `scripts/backend.ps1`은 이 PC의 개발용 `state-db`로 실제 시작해 상태 확인 200과 V1 적용을 확인했다(실행 로그에 비밀번호 없음). Linux에서는 실행하지 않았다.

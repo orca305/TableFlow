@@ -20,7 +20,8 @@
 ## 자주 쓰는 명령
 
 ```powershell
-cd backend;  .\gradlew.bat test                                  # 기본(실제 DB 없이)
+docker compose -f infra/state/compose.yml up -d --wait          # 시험용 상태 DB(127.0.0.1:15443, 모든 Spring 테스트에 필요)
+cd backend;  .\gradlew.bat test                                  # 기본(이관 대상 DB 없이)
 cd frontend; npm ci; npx tsc --noEmit; npx playwright test       # 사전: backend bootJar + NEXT_PUBLIC_API_URL=http://localhost:18080/api/v1 npm run build
 ```
 

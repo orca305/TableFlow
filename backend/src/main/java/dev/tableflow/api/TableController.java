@@ -19,10 +19,16 @@ public class TableController {
     private final DocumentParser parser;
     private final TableEngine engine;
     private final TableExporter exporter;
-    public TableController(DocumentParser parser, TableEngine engine, TableExporter exporter) {
-        this.parser = parser; this.engine = engine; this.exporter = exporter;
+    private final dev.tableflow.state.StateDbHealth stateDb;
+    public TableController(DocumentParser parser, TableEngine engine, TableExporter exporter, dev.tableflow.state.StateDbHealth stateDb) {
+        this.parser = parser; this.engine = engine; this.exporter = exporter; this.stateDb = stateDb;
     }
-    @GetMapping("/health") public Map<String, String> health() { return Map.of("status", "ok", "version", "0.1.0"); }
+    /** 서버와 상태 DB의 상태. 상태 DB를 쓸 수 없으면 503이다(접속 정보는 싣지 않는다). */
+    @GetMapping("/health") public ResponseEntity<Map<String, String>> health() {
+        boolean up = stateDb.available();
+        return ResponseEntity.status(up ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE)
+            .body(Map.of("status", up ? "ok" : "unavailable", "version", "0.1.0", "stateDb", up ? "ok" : "unavailable"));
+    }
 
     @PostMapping(value="/files/parse", consumes=MediaType.MULTIPART_FORM_DATA_VALUE)
     public ParseResult parse(@RequestParam MultipartFile file, @RequestParam(required=false) String sheet,

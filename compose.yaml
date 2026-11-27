@@ -16,5 +16,21 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+  # TableFlow 서버 상태를 담는 개발용 PostgreSQL. 비밀번호가 비어 있으면 이 서비스만 시작에 실패한다.
+  state-db:
+    image: postgres:17-alpine
+    ports:
+      - "127.0.0.1:15442:5432"
+    environment:
+      POSTGRES_USER: tableflow
+      POSTGRES_PASSWORD: ${TABLEFLOW_STATE_DB_PASSWORD:-}
+      POSTGRES_DB: tableflow
+    volumes:
+      - tableflow-state:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tableflow -d tableflow -h 127.0.0.1"]
+      interval: 3s
+      retries: 40
 volumes:
   tableflow-mysql:
+  tableflow-state:
