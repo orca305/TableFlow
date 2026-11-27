@@ -194,3 +194,27 @@ npx playwright test tests/migration.spec.ts tests/db-to-file.spec.ts    # 기대
 - Vercel은 프런트엔드만 호스팅하므로 백엔드 없이 올리면 기능이 동작하지 않는다. 포트폴리오 소개용으로만 올리고 그 사실을 화면에 알린다.
 - `NEXT_PUBLIC_DEMO_MODE=true`(빌드 시점): `frontend/src/lib/api.ts`가 모든 API 호출을 네트워크 없이 막고(`demoMode`), `app/page.tsx`가 경고 배너를 보여 준다. 로컬에서 데모 모드로 빌드해 배너와 "API 요청 0건"을 확인했다(기본 모드·E2E는 영향 없음, 단 Playwright 실행 전에는 `NEXT_PUBLIC_API_URL`로 다시 빌드할 것).
 - 실제 배포(Vercel 계정 로그인, 프로젝트 생성, 도메인 `*.vercel.app`)는 사용자 계정이 필요해 이 문서 작성 시점에는 하지 않았다. 설정: Root Directory `frontend`, 환경변수 `NEXT_PUBLIC_DEMO_MODE=true`.
+
+## 15. 2026-11-26 일괄 이관 보강: 테이블별 설정·검증·재개
+
+- **테이블별 설정**: `BatchMigration.TableOption(table, mappings?, where?)` → 사전 점검·실행·검증·스케줄(`BatchRequest.tableOptions`)에 모두 적용. 화면은 `BatchTableSettings`(행 조건, 컬럼 제외, 대상 컬럼 이름, 변환 규칙). 설정하지 않은 테이블은 기존 자동 매핑 그대로다. 컬럼 이름 기본값 함수는 `lib/names.ts`로 옮겨 단건·일괄 화면이 함께 쓴다.
+- **이관 후 검증**: `POST /connections/migrate/batch/verify`, 화면 "이관 결과 검증"(이번 작업에서 완료된 테이블만). 추가 적재한 테이블은 기존 행 때문에 불일치로 나오며, 변환 컬럼은 값 비교에서 제외한다.
+- **재개 보완**: `Item.created`를 저장해, 이 작업이 만든 테이블에는 재개 때 `MigrationService.completeStructure`가 같은 컬럼 구성의 인덱스·FK가 없을 때만 추가한다. 원래 있던 대상 테이블은 바꾸지 않는다.
+- **버그 수정**: 일괄 이관을 취소한 뒤 재개하면, 취소 당시 적재 중이던 테이블이 "대기" 상태라 `건너뜀` 옵션에서 부분 적재된 채 건너뛰어졌다. 이제 이어서 적재한다(테스트 포함). 이 수정 전에 저장된 작업은 `created` 정보가 없어 기존 동작을 따른다.
+- 한계: 화면에서 대상 타입·대상 테이블 이름은 지정할 수 없다. 단건 분할 이관의 재개는 인덱스·FK를 보완하지 않는다. 부모 테이블에 행 조건을 걸면 자식에서 FK 위반이 날 수 있어 사전 점검에서 안내만 한다.
+- 검증: 백엔드 전체(Oracle/PostgreSQL/MySQL/MariaDB/SQL Server/CUBRID 실서버 설정) 173개 중 실패 0, 건너뜀 5(Tibero 1, 로컬 MySQL 4). 신규 `BatchTableOptionsIntegrationTests`는 기존 4조합에서 통과(SQL Server·CUBRID의 테이블별 설정·구조 보완은 별도 검증하지 않음). Playwright 전체 42개 중 37 통과, 4 건너뜀, 1 실패(`변환 규칙` 시나리오 90초 시간 초과, 단독 2회 재실행 통과 — 기존에 관찰된 간헐 실패와 같은 양상이며 원인 미확정). `cubrid.spec.ts`는 전용 환경 설정 없이 실행해 건너뜀. TypeScript 검사와 프로덕션 빌드 통과.
+
+## 16. 2026-11-27 일괄 사전 점검 속도 개선, 요청 제한 응답 수정
+
+- **원인**: 일괄 사전 점검은 테이블 하나를 분석할 때 DB 연결을 여러 번 새로 열었다(Oracle에서 특히 느림).
+- **수정**: `JdbcExplorer.reusing(...)` 범위 안에서는 같은 접속 정보의 읽기 전용 연결과 테이블·컬럼·인덱스/FK 조회 결과를 재사용한다. 호출 스레드에만 적용되고 끝나면 닫는다. 실패한 연결은 버린다. 일괄 사전 점검·이관 후 검증·실행 전 준비 조회에 적용했다. 적재와 DDL 단계는 기존대로 매번 연결한다. **범위 안에서 DDL을 실행하는 작업에는 쓰지 말 것**(캐시가 낡는다).
+- **측정**(전용 컨테이너, 루프백, 빈 테이블 60개·컬럼 4개·FK 포함, 3회): Oracle→PostgreSQL 47.9/32.7/32.9초 → 6.2/1.6/1.5초, PostgreSQL→MariaDB 7.3/7.0/7.0초 → 0.6/0.5/0.5초. 측정 도구는 `BatchPlanPerformanceTests`(`TABLEFLOW_TEST_PERF_PLAN=true`일 때만). 200개 테이블, 원격 DB, 행이 많은 테이블(행 수 조회가 지배적)은 재지 않았다.
+- **E2E 실패 원인 확인**: 전체 Playwright 실행에서 2개가 두 번 연속 같은 곳에서 실패했다. 브라우저 기록은 CORS 차단, 서버 로그는 preflight 뒤 POST가 앱에 도달하지 않음, 직전 60초 POST 120건이었다. `RequestLimits`의 429가 CORS 헤더 없이 나가고 있었다. 이제 허용 출처에는 헤더를 붙여 화면에 "요청이 많습니다" 사유가 전달된다. 기본 한도는 그대로이고 `tableflow.api.posts-per-minute`(`TABLEFLOW_POSTS_PER_MINUTE`)로 바꿀 수 있으며, Playwright 테스트 서버만 1000으로 올렸다. §10·§12 등에 적은 과거 간헐 실패가 모두 이 원인인지는 확인하지 못했다.
+- 검증: 백엔드 전체(6종 DB 실서버 설정) 180개 중 실패 0, 건너뜀 6(성능 측정 1, Tibero 1, 로컬 MySQL 4). 신규 `ConnectionReuseIntegrationTests`(Oracle/PostgreSQL/MySQL/MariaDB)·`RequestLimitsTests` 통과. Playwright(JDBC·로컬 OCR) 42개 중 38 통과, 4 건너뜀(CUBRID 2, 스크린샷 2), 실패 0. TypeScript 검사 통과(프런트 소스는 테스트 설정만 변경). SQL Server·CUBRID의 속도 개선 효과는 재지 않았다.
+
+## 17. 2026-11-27 단건 분할 이관 재개 때 인덱스·FK 보완
+
+- **재현**: 대상에 같은 이름의 인덱스(MySQL 계열은 FK 제약)를 미리 두면 테이블 생성 뒤 DDL이 실패한다. 원인을 치우고 재개하면 작업은 성공하지만 외래 키가 빠진 채였다(수정 전 `MigrationResumeStructureIntegrationTests`의 Oracle↔PostgreSQL에서 FK 0개 확인).
+- **수정**: `MigrationService.Progress.targetCreated/createdTarget`. CREATE TABLE 성공 직후 대상 식별값(DBMS·호스트·포트·DB·스키마·테이블)을 `JobStore.Stored.createdTarget`에 저장하고, 끝나지 않은 같은 작업을 재개할 때만 `completeStructure`를 부른다. 일괄 이관도 같은 경로를 쓰며 `Item.created`는 이제 CREATE가 실제로 성공했을 때만 true다(생성에 실패한 뒤 사용자가 직접 만든 테이블은 바꾸지 않는다).
+- 한계: 10,000행 이하 즉시 실행(`/migrate`)은 작업 기록이 없어 보완하지 않는다. CREATE 성공과 기록 저장 사이에 서버가 꺼지면 보완 대상에서 빠진다. 이 수정 전에 실패한 단건 작업에는 기록이 없어 기존 동작을 따른다. DB가 거부해 만들 수 없는 인덱스·FK(데이터 중복, 타입 불일치 등)가 있으면 원인을 해결할 때까지 재개가 실패한다.
+- 검증: 백엔드 전체(6종 DB 실서버 설정) 185개 중 실패 0, 건너뜀 6(성능 측정 1, Tibero 1, 로컬 MySQL 4). 신규 통합 테스트는 Oracle→PostgreSQL, PostgreSQL→Oracle, MySQL→MariaDB, MariaDB→MySQL 4조합 통과(SQL Server·CUBRID의 보완은 별도 검증하지 않음). Playwright 42개 중 38 통과, 4 건너뜀, 실패 0.

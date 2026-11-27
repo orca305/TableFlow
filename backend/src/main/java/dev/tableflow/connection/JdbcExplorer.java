@@ -103,7 +103,7 @@ public class JdbcExplorer {
     }
     public Items<String> tables(Credentials credentials, String schema) {
         requireName(schema);
-        return connected(credentials, connection -> {
+        return cached(() -> connected(credentials, connection -> {
             var meta = connection.getMetaData();
             List<String> items = new ArrayList<>();
             try (var rows = meta.getTables(catalogBased(credentials.dbms()) ? schema : null,
@@ -116,11 +116,11 @@ public class JdbcExplorer {
                 }
             }
             return new Items<>(items, false);
-        });
+        }), "tables", credentials, schema);
     }
     public Items<ColumnInfo> columns(Credentials credentials, String schema, String table) {
         requireName(schema); requireName(table);
-        return connected(credentials, connection -> {
+        return cached(() -> connected(credentials, connection -> {
             var meta = connection.getMetaData();
             String catalog = catalogBased(credentials.dbms()) ? schema : null;
             String namespace = catalogBased(credentials.dbms()) ? null : schema;
@@ -144,7 +144,7 @@ public class JdbcExplorer {
                 }
             }
             return new Items<>(items, false);
-        });
+        }), "columns", credentials, schema, table);
     }
     public record IndexInfo(String name, boolean unique, List<String> columns) {}
     public record ForeignKeyInfo(String name, List<String> columns, String parentSchema, String parentTable, List<String> parentColumns) {}
@@ -152,7 +152,7 @@ public class JdbcExplorer {
     public record TableExtras(List<IndexInfo> indexes, List<ForeignKeyInfo> foreignKeys, Map<String, String> defaults) {}
     public TableExtras extras(Credentials credentials, String schema, String table) {
         requireName(schema); requireName(table);
-        return connected(credentials, connection -> {
+        return cached(() -> connected(credentials, connection -> {
             var meta = connection.getMetaData(); boolean catalogBased = catalogBased(credentials.dbms());
             String catalog = catalogBased ? schema : null, namespace = catalogBased ? null : schema;
             Set<String> pk = new HashSet<>();
@@ -200,7 +200,7 @@ public class JdbcExplorer {
                 while (rows.next()) { String name = rows.getString(4); String def = rows.getString(13); if (def != null && !def.isBlank()) defaults.put(name, def.strip()); }
             }
             return new TableExtras(indexes, foreign, defaults);
-        });
+        }), "extras", credentials, schema, table);
     }
     private boolean catalogBased(Dbms dbms) { return SqlDialect.catalogBased(dbms); }
     private void requireName(String name) {
@@ -275,24 +275,55 @@ public class JdbcExplorer {
                     if (!address.isLoopbackAddress()) throw new Failure(400, "JDBC_TLS_REQUIRED", "원격 DB 연결에는 인증서 검증 TLS가 필요합니다.");
             } catch (UnknownHostException e) { throw new Failure(400, "JDBC_HOST", "DB 호스트를 찾을 수 없습니다. 호스트 이름을 확인해주세요."); }
         }
+        Session reuse = readOnly ? session.get() : null;
         try {
-            if (credentials.driverId() != null) {
-                if (driverCatalog == null) throw new Failure(503, "JDBC_DRIVER", "등록 드라이버 기능을 사용할 수 없습니다.");
-                var loaded = driverCatalog.open(credentials.driverId(), credentials.dbms());
-                try (Connection connection = loaded.driver().connect(url(credentials), properties(credentials))) {
-                    if (connection == null) throw new Failure(503, "JDBC_DRIVER", "선택한 드라이버가 접속 URL을 지원하지 않습니다.");
-                    connection.setReadOnly(readOnly);
-                    return work.run(connection);
-                }
-            }
-            // Explicit driver selection prevents MariaDB/MySQL URL ambiguity.
-            Class.forName(credentials.dbms().driver);
-            try (Connection connection = DriverManager.getConnection(url(credentials), properties(credentials))) {
-                connection.setReadOnly(readOnly);
-                return work.run(connection);
-            }
+            if (reuse == null) try (Connection connection = open(credentials, readOnly)) { return work.run(connection); }
+            Connection connection = reuse.connections.get(credentials);
+            if (connection == null) { connection = open(credentials, true); reuse.connections.put(credentials, connection); }
+            boolean healthy = false;
+            try { T result = work.run(connection); healthy = true; return result; }
+            // 실패한 연결은 상태를 믿을 수 없으므로 버리고 다음 조회에서 새로 연다.
+            finally { if (!healthy && reuse.connections.remove(credentials, connection)) closeQuietly(connection); }
         } catch (ClassNotFoundException e) { throw new Failure(503, "JDBC_DRIVER", "DB 드라이버를 사용할 수 없습니다. 서버 빌드를 확인해주세요."); }
         catch (SQLException e) { throw classify(e); }
+    }
+    private Connection open(Credentials credentials, boolean readOnly) throws SQLException, ClassNotFoundException {
+        Connection connection;
+        if (credentials.driverId() != null) {
+            if (driverCatalog == null) throw new Failure(503, "JDBC_DRIVER", "등록 드라이버 기능을 사용할 수 없습니다.");
+            var loaded = driverCatalog.open(credentials.driverId(), credentials.dbms());
+            connection = loaded.driver().connect(url(credentials), properties(credentials));
+            if (connection == null) throw new Failure(503, "JDBC_DRIVER", "선택한 드라이버가 접속 URL을 지원하지 않습니다.");
+        } else {
+            // Explicit driver selection prevents MariaDB/MySQL URL ambiguity.
+            Class.forName(credentials.dbms().driver);
+            connection = DriverManager.getConnection(url(credentials), properties(credentials));
+        }
+        boolean ready = false;
+        try { connection.setReadOnly(readOnly); ready = true; return connection; }
+        finally { if (!ready) closeQuietly(connection); }
+    }
+    private static void closeQuietly(Connection connection) { try { connection.close(); } catch (SQLException ignored) { /* 닫기 실패는 조회 결과에 영향이 없다 */ } }
+
+    private static final class Session { final Map<Credentials, Connection> connections = new HashMap<>(); final Map<List<Object>, Object> metadata = new HashMap<>(); }
+    private final ThreadLocal<Session> session = new ThreadLocal<>();
+    /**
+     * 여러 테이블을 조회만 하는 작업(사전 점검·검증 등) 동안 읽기 전용 연결과 메타데이터(테이블·컬럼·인덱스/FK) 결과를 재사용한다.
+     * 호출한 스레드에만 적용되고 작업이 끝나면 닫고 버린다. 그 사이에 DDL을 실행하는 작업에는 쓰지 않는다.
+     */
+    public <T> T reusing(java.util.function.Supplier<T> work) {
+        if (session.get() != null) return work.get();
+        Session current = new Session(); session.set(current);
+        try { return work.get(); }
+        finally { session.remove(); current.connections.values().forEach(JdbcExplorer::closeQuietly); }
+    }
+    @SuppressWarnings("unchecked")
+    private <T> T cached(java.util.function.Supplier<T> load, Object... key) {
+        Session current = session.get();
+        if (current == null) return load.get();
+        List<Object> id = Arrays.asList(key); T hit = (T) current.metadata.get(id);
+        if (hit == null) { hit = load.get(); current.metadata.put(id, hit); }
+        return hit;
     }
     static Failure classify(SQLException error) {
         for (Throwable cause = error; cause != null; cause = cause.getCause()) {

@@ -130,23 +130,32 @@ public class ConnectionController {
     /** 여러 테이블(스키마 전체 포함) 일괄 이관 요청. 대상 테이블은 원본 구조로 새로 만든다. ifExists: skip(기본) | append. */
     public record BatchRequest(@NotNull @Valid Credentials source, @NotBlank @Size(max=128) String sourceSchema, @NotNull @Valid Credentials target, @NotBlank @Size(max=128) String targetSchema,
         @NotEmpty @Size(max=200) java.util.List<@NotBlank @Size(max=128) String> tables, boolean preserveKeys, boolean copyIndexes, boolean copyDefaults, boolean copyForeignKeys,
-        @Pattern(regexp="skip|append") String ifExists, @Min(100) @Max(10000) Integer chunkSize, @Pattern(regexp="[0-9a-fA-F-]{36}") String requestId, boolean confirmed) {
+        @Pattern(regexp="skip|append") String ifExists, @Min(100) @Max(10000) Integer chunkSize, @Pattern(regexp="[0-9a-fA-F-]{36}") String requestId, boolean confirmed,
+        @Size(max=200) java.util.List<dev.tableflow.load.BatchMigration.@NotNull @Valid TableOption> tableOptions) {
+        /** 테이블별 설정이 없는 요청. */
+        public BatchRequest(Credentials source,String sourceSchema,Credentials target,String targetSchema,java.util.List<String> tables,boolean preserveKeys,boolean copyIndexes,boolean copyDefaults,boolean copyForeignKeys,String ifExists,Integer chunkSize,String requestId,boolean confirmed){
+            this(source,sourceSchema,target,targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,requestId,confirmed,null);
+        }
         BatchRequest forStorage(dev.tableflow.connection.ConnectionStore store){
-            return new BatchRequest(MigrateRequest.strip(source,store),sourceSchema,MigrateRequest.strip(target,store),targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,requestId,false);
+            return new BatchRequest(MigrateRequest.strip(source,store),sourceSchema,MigrateRequest.strip(target,store),targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,requestId,false,tableOptions);
         }
         BatchRequest withPasswords(String sourcePassword,String targetPassword){
-            return new BatchRequest(MigrateRequest.withPassword(source,sourcePassword),sourceSchema,MigrateRequest.withPassword(target,targetPassword),targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,requestId,true);
+            return new BatchRequest(MigrateRequest.withPassword(source,sourcePassword),sourceSchema,MigrateRequest.withPassword(target,targetPassword),targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,requestId,true,tableOptions);
         }
         /** 스케줄 실행용 사본: 새 요청 ID, 동의 완료, 이미 있는 테이블에는 추가 적재(반복 실행이 건너뛰지 않도록). */
         BatchRequest forRun(String id){
-            return new BatchRequest(source,sourceSchema,target,targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,"append",chunkSize,id,true);
+            return new BatchRequest(source,sourceSchema,target,targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,"append",chunkSize,id,true,tableOptions);
         }
-        dev.tableflow.load.BatchMigration.Options options(){return new dev.tableflow.load.BatchMigration.Options(preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize);}
+        dev.tableflow.load.BatchMigration.Options options(){return new dev.tableflow.load.BatchMigration.Options(preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,tableOptions);}
         @Override public String toString(){return "BatchRequest[redacted]";}
     }
     /** 일괄 이관 사전 점검: 처리 순서(부모 먼저), 테이블별 행 수·대상 이름·충돌·오류를 돌려준다. 아무것도 쓰지 않는다. */
     @PostMapping("/migrate/batch/check") public dev.tableflow.load.BatchMigration.Plan batchCheck(@Valid @RequestBody BatchRequest r){
         return batch.plan(r.source(),r.sourceSchema(),r.target(),r.targetSchema(),r.tables(),r.options());
+    }
+    /** 일괄 이관 후 검증: 테이블마다 원본(행 조건 적용)과 대상의 행 수·집계를 비교한다. 읽기 전용. */
+    @PostMapping("/migrate/batch/verify") public dev.tableflow.load.BatchMigration.VerifyResult batchVerify(@Valid @RequestBody BatchRequest r){
+        return batch.verify(r.source(),r.sourceSchema(),r.target(),r.targetSchema(),r.tables(),r.options());
     }
     /** 일괄 이관 실행(백그라운드). 진행률과 테이블별 상태는 /migrate/jobs/{id}로 조회한다. */
     @PostMapping("/migrate/batch") public Object batchRun(@Valid @RequestBody BatchRequest r){

@@ -69,3 +69,57 @@ test("real browser: 일괄 이관 — 부모 테이블 먼저 순서대로 생�
   await run.getByRole("button", { name: "사전 점검" }).click();
   await expect(rows.first()).toContainText("건너뜀");
 });
+
+test("real browser: 일괄 이관 — 테이블별 행 조건·컬럼 제외·변환 규칙을 적용하고 결과를 검증한다", async ({ page }) => {
+  pg(dropPg);
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "메뉴" }).getByRole("button", { name: "일괄 이관", exact: true }).click();
+  const src = page.getByRole("region", { name: "일괄 이관 원본" });
+  await connect(src, "원본", ORACLE);
+  await src.getByLabel("일괄 원본 스키마", { exact: true }).selectOption("TABLEFLOW");
+  await src.getByLabel("테이블 검색", { exact: true }).fill("TF_UB_");
+  await src.getByRole("checkbox", { name: "TF_UB_P 선택" }).check();
+  await src.getByRole("checkbox", { name: "TF_UB_C 선택" }).check();
+  const dst = page.getByRole("region", { name: "일괄 이관 대상" });
+  await connect(dst, "대상", PG);
+  await dst.getByLabel("일괄 대상 스키마", { exact: true }).selectOption("public");
+
+  const setup = page.getByRole("region", { name: "일괄 이관 테이블 설정" });
+  await setup.getByText("테이블별 설정 (선택)").click();
+  const pickTable = setup.getByLabel("설정할 테이블");
+  await pickTable.selectOption("TF_UB_P");
+  await setup.getByLabel("TF_UB_P 행 조건").fill("ID <= 2");
+  await setup.getByRole("button", { name: "TF_UB_P NAME 변환 규칙" }).click();
+  await setup.getByRole("button", { name: "규칙 추가" }).click();
+  await setup.getByLabel("NAME 규칙 1 종류").selectOption("replace");
+  await expect(setup.getByText("TF_UB_P: 입력이 끝나지 않은 변환 규칙이 있습니다")).toBeVisible();
+  await expect(page.getByRole("region", { name: "일괄 이관 실행" })).toHaveCount(0); // 미완성 설정이 있으면 실행할 수 없다
+  await setup.getByLabel("NAME 규칙 1 바꿀 문자열").fill("부모");
+  await setup.getByLabel("NAME 규칙 1 바꿀 내용").fill("P-");
+  await pickTable.selectOption("TF_UB_C");
+  await setup.getByLabel("TF_UB_C 행 조건").fill("PID <= 2");
+  await setup.getByRole("checkbox", { name: "TF_UB_C NOTE 이관" }).uncheck();
+  await expect(setup.getByText("2개 테이블에 적용")).toBeVisible();
+
+  const run = page.getByRole("region", { name: "일괄 이관 실행" });
+  await run.getByRole("button", { name: "사전 점검" }).click();
+  await expect(run.getByText("이관할 5행")).toBeVisible();
+  const check = run.getByRole("table", { name: "일괄 이관 점검 결과" });
+  await expect(check).toContainText("컬럼 매핑에서 제외: NOTE");
+  await expect(check).toContainText("행 조건 적용: PID <= 2");
+  await run.getByRole("checkbox", { name: /CREATE TABLE.*동의/ }).check();
+  await run.getByRole("button", { name: "이관 시작" }).click();
+  await expect(run.getByRole("status", { name: "일괄 이관 진행 현황" })).toContainText("완료 · 테이블 2 / 2개", { timeout: 60_000 });
+
+  expect(pg("SELECT string_agg(name, ',' ORDER BY id) FROM tf_ub_p;").trim()).toBe("P-1,P-2");
+  expect(pg("SELECT count(*) FROM tf_ub_c;").trim()).toBe("3");
+  expect(pg("SELECT count(*) FROM information_schema.columns WHERE table_name='tf_ub_c';").trim()).toBe("2");
+
+  const verify = run.getByRole("group", { name: "일괄 이관 검증" });
+  await verify.getByRole("button", { name: "이관 결과 검증 (2개 테이블)" }).click();
+  await expect(verify.getByRole("status")).toContainText("일치 2 · 불일치 0 · 실패 0");
+  pg("DELETE FROM tf_ub_c WHERE id=4;");
+  await verify.getByRole("button", { name: "이관 결과 검증 (2개 테이블)" }).click();
+  await expect(verify.getByRole("status")).toContainText("일치 1 · 불일치 1 · 실패 0");
+  await expect(verify.getByRole("table", { name: "일괄 이관 검증 결과" }).locator("tbody tr").filter({ hasText: "TF_UB_C" })).toContainText("불일치");
+});

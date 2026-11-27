@@ -19,8 +19,10 @@ import java.util.*;
 public class JobStore {
     private static final Logger log = LoggerFactory.getLogger(JobStore.class);
     private static final int KEEP = 50;
-    /** definition: 비밀번호를 비운 요청 본문. source/target: 화면에 보여줄 이름(비밀번호·호스트 없음). */
-    public record Stored(String id, MigrationJobs.Status status, JsonNode definition, String source, String target) {}
+    /** definition: 비밀번호를 비운 요청 본문. source/target: 화면에 보여줄 이름(비밀번호·호스트 없음). createdTarget: 이 작업이 만든 대상 테이블 식별값(없으면 null). */
+    public record Stored(String id, MigrationJobs.Status status, JsonNode definition, String source, String target, String createdTarget) {
+        public Stored(String id, MigrationJobs.Status status, JsonNode definition, String source, String target) { this(id, status, definition, source, target, null); }
+    }
 
     private final boolean enabled; private final Path file; private final ObjectMapper json;
     public JobStore(@Value("${tableflow.jobs.enabled:true}") boolean enabled, @Value("${tableflow.jobs.file:data/jobs.json}") String file, ObjectMapper json) {

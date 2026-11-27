@@ -70,11 +70,15 @@ public class MigrationService {
         void total(int chunks, long rows);
         void chunk(int doneChunks, long doneRows, int replayedChunks);
         boolean cancelled();
+        /** 이 작업(이전 실행 포함)이 이 대상 테이블을 만들었는지. 재개 때 빠진 인덱스·외래 키를 보완하는 근거. */
+        default boolean createdTarget(String key) { return false; }
+        /** 대상 테이블 CREATE가 성공한 직후 알린다(뒤따르는 DDL이 실패해도 남아야 한다). */
+        default void targetCreated(String key) { }
     }
 
     private enum Kind { NONE, DATETIME_TO_DATE, DATE_TO_DATETIME }
     private record Layout(List<Mapping> mappings, List<Column> columns, List<Kind> kinds, List<ColumnPlan> plans, List<String> notes, List<String> warnings,
-                          List<String> ddl, Set<String> keepIdentity, List<FkPlan> fkPlans) {}
+                          List<String> ddl, Set<String> keepIdentity, List<FkPlan> fkPlans, boolean createsTarget) {}
 
     // ---------------------------------------------------------------- 파일(표) → 신규 DB 테이블 생성
     public record CreatePlan(String dbms, String schema, String tableName, int rows, List<String> columns, boolean createsTable, List<String> ddl, List<String> warnings) {}
@@ -277,7 +281,7 @@ public class MigrationService {
             throw new IllegalArgumentException("원본이 " + counted.totalRows() + "행으로 최대 이관 행 수(" + limit + ")보다 많습니다. 일부만 이관하는 것을 막았습니다.");
         Layout layout = layout(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, createTable, preserveKeys, extras, counted.table());
         Table table = materialize(layout, counted.table());
-        createIfNeeded(target, layout, table);
+        createIfNeeded(target, layout, table, () -> { });
         var result = loader.load(target, table, targetSchema, targetTable, requestId, layout.keepIdentity());
         List<String> notes = new ArrayList<>(resync(target, targetSchema, targetTable, layout.keepIdentity()));
         return new Outcome(result.requestId(), result.tableName(), result.insertedRows(), result.replayed(), notes, 0, 0);
@@ -301,17 +305,25 @@ public class MigrationService {
         if (total > limit) throw new IllegalArgumentException("원본이 " + total + "행으로 최대 이관 행 수(" + limit + ")보다 많습니다. 일부만 이관하는 것을 막았습니다.");
         if (total > maxRows) throw new IllegalArgumentException("원본이 " + total + "행으로 서버 한도(" + maxRows + "행)를 넘습니다.");
         List<String> names = readColumns(mappings);
+        String targetKey = String.join("|", target.dbms().name(), target.host(), String.valueOf(target.port()), target.database(), targetSchema, targetTable);
+        boolean createdEarlier = createTable && progress.createdTarget(targetKey); // 이번 실행에서 DDL을 하기 전에 확인한다
         if (total == 0) {
             if (!createTable) throw new IllegalArgumentException("이관할 데이터가 없습니다.");
             Table shape = reader.readCounted(source, sourceSchema, sourceTable, names, 1, extras.where()).table();
             Layout empty = layout(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, true, preserveKeys, extras, shape);
-            executeDdl(target, empty);
+            executeDdl(target, empty, () -> progress.targetCreated(targetKey));
+            List<String> done = new ArrayList<>();
+            done.add(empty.ddl().isEmpty() ? "원본에 행이 없어 이미 있는 대상 테이블은 그대로 두었습니다." : "원본에 행이 없어 테이블 구조만 생성했습니다.");
+            if (createdEarlier && !empty.createsTarget()) done.addAll(completeStructure(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, extras));
             progress.total(0, 0);
-            return new Outcome(requestId, targetTable, 0, false, List.of(empty.ddl().isEmpty() ? "원본에 행이 없어 이미 있는 대상 테이블은 그대로 두었습니다." : "원본에 행이 없어 테이블 구조만 생성했습니다."), 0, 0);
+            return new Outcome(requestId, targetTable, 0, false, done, 0, 0);
         }
         Table sample = reader.readPage(source, sourceSchema, sourceTable, names, 0, (int) Math.min(SAMPLE_ROWS, total), extras.where());
         Layout layout = layout(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, createTable, preserveKeys, extras, sample);
-        createIfNeeded(target, layout, materialize(layout, sample));
+        createIfNeeded(target, layout, materialize(layout, sample), () -> progress.targetCreated(targetKey));
+        // 중단 뒤 재개: 이 작업이 만든 테이블에 빠진 인덱스·외래 키가 있으면 적재 전에 채운다.
+        List<String> repaired = createdEarlier && !layout.createsTarget()
+            ? completeStructure(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, extras) : List.of();
         int chunks = (int) ((total + chunk - 1) / chunk);
         progress.total(chunks, total);
         long inserted = 0; int replayed = 0;
@@ -340,7 +352,8 @@ public class MigrationService {
             inserted += result.insertedRows(); if (result.replayed()) replayed++;
             progress.chunk(i + 1, inserted, replayed);
         }
-        List<String> notes = new ArrayList<>(resync(target, targetSchema, targetTable, layout.keepIdentity()));
+        List<String> notes = new ArrayList<>(repaired);
+        notes.addAll(resync(target, targetSchema, targetTable, layout.keepIdentity()));
         return new Outcome(requestId, targetTable, inserted, replayed == chunks, notes, chunks, replayed);
     }
 
@@ -433,6 +446,63 @@ public class MigrationService {
             });
         } catch (RuntimeException e) { return null; }
     }
+    /**
+     * 중단됐던 이관을 재개할 때, 이 작업이 만든 대상 테이블에 빠진 인덱스·외래 키를 추가한다(테이블 생성 뒤 DDL이 중간에 실패한 경우).
+     * 같은 컬럼 구성의 인덱스·외래 키가 이미 있으면 건너뛰고, 대상 테이블이 없으면 아무것도 하지 않는다(생성은 이어지는 적재가 담당).
+     */
+    public List<String> completeStructure(Credentials source, String sourceSchema, String sourceTable, Credentials target, String targetSchema, String targetTable,
+                                          List<Mapping> mappings, Extras extras) {
+        if (!extras.indexes() && !extras.foreignKeys()) return List.of();
+        if (!loader.enabled()) throw new LoadFailure(503, "JDBC_LOAD_DISABLED", "DB 적재를 활성화하려면 TABLEFLOW_JDBC_LOAD_ENABLED=true로 백엔드를 실행해주세요.");
+        boolean there = explorer.withConnection(target, true, connection -> exists(connection, target.dbms(), targetSchema, targetTable));
+        if (!there) return List.of();
+        var from = explorer.extras(source, sourceSchema, sourceTable);
+        var have = explorer.extras(target, targetSchema, targetTable);
+        Map<String, String> mapped = new HashMap<>(); for (Mapping m : mappings) mapped.put(m.source(), m.target());
+        String shortName = targetTable.length() > 40 ? targetTable.substring(0, 40) : targetTable;
+        List<String> ddl = new ArrayList<>(), notes = new ArrayList<>();
+        if (extras.indexes()) {
+            Set<String> names = new HashSet<>(); for (var i : have.indexes()) names.add(i.name().toLowerCase(Locale.ROOT));
+            int n = 0;
+            for (var idx : from.indexes()) {
+                if (!mapped.keySet().containsAll(idx.columns())) continue;
+                List<String> cols = idx.columns().stream().map(mapped::get).toList(); n++;
+                if (have.indexes().stream().anyMatch(i -> sameNames(i.columns(), cols) && (i.unique() || !idx.unique()))) continue;
+                String name = "ix_" + shortName + "_" + n;
+                for (int k = 2; !names.add(name.toLowerCase(Locale.ROOT)); k++) name = "ix_" + shortName + "_" + n + "_" + k;
+                ddl.add(TableDdl.createIndex(target.dbms(), targetSchema, targetTable, name, idx.unique(), cols));
+                notes.add("빠져 있던 인덱스를 추가했습니다: " + String.join(", ", cols) + ".");
+            }
+        }
+        if (extras.foreignKeys()) {
+            Set<String> names = new HashSet<>(); for (var f : have.foreignKeys()) names.add(f.name().toLowerCase(Locale.ROOT));
+            List<String> tables = explorer.tables(target, targetSchema).items(); int n = 0;
+            for (var fk : from.foreignKeys()) {
+                if (fk.parentTable().equalsIgnoreCase(sourceTable) || !mapped.keySet().containsAll(fk.columns())) continue;
+                String parent = tables.stream().filter(t -> t.equalsIgnoreCase(fk.parentTable())).findFirst().orElse(null);
+                if (parent == null) continue;
+                List<String> parentColumns = explorer.columns(target, targetSchema, parent).items().stream().map(ColumnInfo::name).toList();
+                List<String> referenced = new ArrayList<>();
+                for (String want : fk.parentColumns()) parentColumns.stream().filter(c -> c.equalsIgnoreCase(want)).findFirst().ifPresent(referenced::add);
+                if (referenced.size() != fk.parentColumns().size()) continue;
+                List<String> cols = fk.columns().stream().map(mapped::get).toList(); n++;
+                if (have.foreignKeys().stream().anyMatch(f -> f.parentTable().equalsIgnoreCase(parent) && sameNames(f.columns(), cols))) continue;
+                String name = "fk_" + shortName + "_" + n;
+                for (int k = 2; !names.add(name.toLowerCase(Locale.ROOT)); k++) name = "fk_" + shortName + "_" + n + "_" + k;
+                ddl.add(TableDdl.addForeignKey(target.dbms(), targetSchema, targetTable, name, cols, targetSchema, parent, referenced));
+                notes.add("빠져 있던 외래 키를 추가했습니다: " + String.join(", ", cols) + " → " + parent + ".");
+            }
+        }
+        if (!ddl.isEmpty()) explorer.withConnection(target, false, connection -> {
+            for (String statement : ddl) try (var st = connection.createStatement()) { st.setQueryTimeout(300); st.execute(statement); }
+            if (!connection.getAutoCommit()) connection.commit();
+            return null;
+        });
+        return notes;
+    }
+    private static boolean sameNames(List<String> a, List<String> b) {
+        return a.size() == b.size() && java.util.stream.IntStream.range(0, a.size()).allMatch(i -> a.get(i).equalsIgnoreCase(b.get(i)));
+    }
     /** 반복 실행(전체 교체)용: 대상 테이블의 모든 행을 지운다. 목록 순서대로 지우므로 자식 테이블이 먼저 오도록 넘겨야 한다. 없는 테이블은 건너뛴다. */
     public int purgeTables(Credentials target, String schema, List<String> tables) {
         return explorer.withConnection(target, false, connection -> {
@@ -467,15 +537,19 @@ public class MigrationService {
         if (!result.valid()) throw new InvalidTable(result);
     }
     /** CREATE만 실행한다(이미 있는 테이블은 건드리지 않음). PostgreSQL 외에는 DDL이 자동 커밋되어 이후 적재가 실패하면 빈 테이블이 남을 수 있다. */
-    private void createIfNeeded(Credentials target, Layout layout, Table sample) {
+    private void createIfNeeded(Credentials target, Layout layout, Table sample, Runnable onTableCreated) {
         if (layout.ddl().isEmpty()) return;
         validateOnly(sample);
-        executeDdl(target, layout);
+        executeDdl(target, layout, onTableCreated);
     }
-    private void executeDdl(Credentials target, Layout layout) {
+    /** 새 테이블을 만드는 계획이면 첫 문장이 CREATE TABLE이다. 그것이 성공한 직후 onTableCreated를 부른다. */
+    private void executeDdl(Credentials target, Layout layout, Runnable onTableCreated) {
         if (layout.ddl().isEmpty()) return;
         explorer.withConnection(target, false, connection -> {
-            for (String statement : layout.ddl()) try (var st = connection.createStatement()) { st.setQueryTimeout(30); st.execute(statement); }
+            for (int i = 0; i < layout.ddl().size(); i++) {
+                try (var st = connection.createStatement()) { st.setQueryTimeout(30); st.execute(layout.ddl().get(i)); }
+                if (i == 0 && layout.createsTarget()) onTableCreated.run();
+            }
             return null;
         });
     }
@@ -660,7 +734,7 @@ public class MigrationService {
             fkPlans.add(new FkPlan(fk.name(), fk.columns(), fk.parentTable(), parentActual != null, copied, msg));
         }
         if (creating && !receiptsExist) ddl.add(TableDdl.receiptsTable(target.dbms(), targetSchema));
-        return new Layout(mappings, columns, kinds, plans, notes, warnings, ddl, keepIdentity, fkPlans);
+        return new Layout(mappings, columns, kinds, plans, notes, warnings, ddl, keepIdentity, fkPlans, !tableExists);
     }
 
     private static String describeSteps(List<ValueTransform.Step> steps) {

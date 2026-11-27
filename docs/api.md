@@ -56,7 +56,7 @@ OCR source에는 `page`(PDF 페이지, 이미지 null), `provider`(mock/local/ex
 | 409 | 같은 적재 요청 ID에 다른 내용 |
 | 413 | 파일 또는 JSON 요청 크기 초과 |
 | 422 | 출력 전 검증 실패 (`issues` 포함) |
-| 429 | 요청 횟수 또는 동시 처리 제한 (`Retry-After: 60`) |
+| 429 | 요청 횟수(IP당 POST, 기본 120회/분, `TABLEFLOW_POSTS_PER_MINUTE`) 또는 동시 처리(4건) 제한 (`Retry-After: 60`, 허용 출처에는 CORS 헤더 포함) |
 | 500 | 예상하지 못한 처리 실패 |
 | 502 | OCR 응답 형식·계약 오류 |
 | 503 | OCR 연결·공급자 장애 |
@@ -137,7 +137,7 @@ Credentials: `{dbms:oracle|postgresql|mysql|mariadb,host,port,database,username,
 - `POST /connections/migrate/*`: 신규 테이블 생성(`createTable=true`)일 때 `copyIndexes`, `copyDefaults`, `copyForeignKeys`(기본 false)로 원본의 보조 인덱스·기본값·외래 키를 함께 만든다. 기본값은 숫자·문자·불리언·현재 시각만 옮기고(시퀀스·함수는 건너뛰고 경고), FK는 부모 테이블이 대상에 이미 있을 때만 생성한다.
 - `POST /connections/migrate/analyze` 응답에 `foreignKeys[{name, columns, parentTable, parentInTarget, copied, message}]`가 추가되었다(부모 테이블 이관 순서 안내).
 - `GET /connections/migrate/jobs` → `{enabled, items:[{status, source, target, resumable, sourceNeedsPassword, targetNeedsPassword}]}` 이관 작업 목록. **서버를 다시 시작해도 유지**되며(`data/jobs.json`, git 제외), 그때 실행 중이던 작업은 `failed/SERVER_RESTARTED`로 복원된다.
-- `POST /connections/migrate/jobs/{id}/resume` `{sourcePassword?, targetPassword?}` → 같은 요청 ID로 다시 시작해 완료된 분할은 건너뛰고 이어서 진행한다. 저장된 비밀번호가 있는 연결은 비밀번호 없이, 없는 쪽만 비밀번호를 받는다. 저장 파일에는 비밀번호가 들어가지 않는다.
+- `POST /connections/migrate/jobs/{id}/resume` `{sourcePassword?, targetPassword?}` → 같은 요청 ID로 다시 시작해 완료된 분할은 건너뛰고 이어서 진행한다. 저장된 비밀번호가 있는 연결은 비밀번호 없이, 없는 쪽만 비밀번호를 받는다. 저장 파일에는 비밀번호가 들어가지 않는다. 이 작업이 대상 테이블을 새로 만든 뒤 인덱스·외래 키 DDL에서 실패했다면, 재개할 때 빠진 것(`copyIndexes`·`copyForeignKeys` 선택분)을 적재 전에 추가한다. 원래 있던 테이블과 이미 성공한 작업의 재제출에는 추가하지 않는다. `/migrate`(10,000행 이하 즉시 실행)에는 적용되지 않는다.
 
 ### 추가 (이관 순서)
 - `POST /connections/order` `{connection, schema, tables[]}` → `{order:[{table, level, parents[], externalParents[]}], cycles[]}`. 선택한 테이블의 외래 키를 읽어 부모가 먼저 오도록 단계(level 0 = 부모 없음)를 계산한다. 서로 참조하는 테이블은 `cycles`로 돌려준다(읽기 전용, 최대 200개).
@@ -146,7 +146,9 @@ Credentials: `{dbms:oracle|postgresql|mysql|mariadb,host,port,database,username,
 - **행 조건**: `/migrate`, `/migrate/check`, `/migrate/analyze`, `/migrate/jobs`, `/migrate/verify` 요청의 선택 필드 `where`(최대 1000자, WHERE 없이 조건식만). 점검·이관·분할 읽기·검증의 원본 쪽에 모두 적용된다. 세미콜론·주석·DML/DDL·UNION·SLEEP 계열 단어는 거부하고, 따옴표 안의 값은 검사하지 않는다. 컬럼 이름 대소문자는 원본 DB 기준이다(PostgreSQL 대문자 컬럼은 큰따옴표). 이관할 컬럼은 `mappings`에 넣은 것만 쓴다.
 - **값 변환 규칙**: `mappings[].steps[]`(최대 10단계, 앞 단계 결과가 다음 단계의 현재 값). `op`: `trim` / `upper` / `lower` / `replace`(find→with) / `map`(치환표) / `nullTo`(value) / `split`(delimiter, part) / `substr`(start, length) / `template`(expression, 문자열 합치기) / `calc`(expression, scale, 사칙연산·괄호). 식에서 `{컬럼}`은 같은 행의 변환 전 원본 컬럼 값, `{@}`은 현재 값이다. 규칙이 참조하는 컬럼은 서버가 추가로 읽는다. 결과는 문자열로 계산해 대상 컬럼 타입(기존 테이블) 또는 문자열/소수(신규 테이블, `type`·`size`·`scale`로 지정 가능)로 넣으며, 형식·길이를 넘으면 사전 점검(표본) 또는 해당 분할에서 거부된다. 변환 규칙이 있는 컬럼은 `/migrate/verify`의 값 비교에서 제외된다(행 수는 비교).
 - `POST /connections/migrate/batch/check` `{source, sourceSchema, target, targetSchema, tables[], preserveKeys, copyIndexes, copyDefaults, copyForeignKeys, ifExists("skip"|"append"), chunkSize}` → `{items[{table,target,rows,columns,excluded[],targetExists,action(create|append|skip|error),level(ok|warn|error),messages[]}], cycles[], notes[], totalRows, blocked}`. 선택한 테이블(최대 200개)을 외래 키 부모 먼저 순서로 나열하고, 대상 이름(DBMS 관례로 변환)·충돌·컬럼 오류를 점검한다. 아무것도 쓰지 않는다.
-- `POST /connections/migrate/batch` (위 요청 + `requestId`, `confirmed:true`) → 작업 상태. 테이블마다 새로 생성(빈 테이블 포함)·분할 적재하며, `GET /migrate/jobs/{id}`의 `items[{table,target,state(pending|running|succeeded|skipped|failed),totalRows,doneRows,message}]`로 테이블별 진행을 본다. 한 테이블이 실패하면 멈추고, `POST /migrate/jobs/{id}/resume`(또는 같은 `requestId` 재제출)로 재개하면 완료된 테이블은 건너뛰고 실패한 테이블부터 이어서 적재한다.
+- `POST /connections/migrate/batch` (위 요청 + `requestId`, `confirmed:true`) → 작업 상태. 테이블마다 새로 생성(빈 테이블 포함)·분할 적재하며, `GET /migrate/jobs/{id}`의 `items[{table,target,state(pending|running|succeeded|skipped|failed),totalRows,doneRows,message}]`로 테이블별 진행을 본다. 한 테이블이 실패하면 멈추고, `POST /migrate/jobs/{id}/resume`(또는 같은 `requestId` 재제출)로 재개하면 완료된 테이블은 건너뛰고 실패한 테이블부터 이어서 적재한다. 취소로 대기 상태가 된 테이블도 이 작업이 만든 것(`items[].created=true`)이면 건너뛰지 않고 이어서 적재하며, 빠진 인덱스·외래 키를 추가한다.
+- **일괄 이관 테이블별 설정**: `/migrate/batch/check`, `/migrate/batch`, `/migrate/batch/verify`와 일괄 스케줄의 선택 필드 `tableOptions[{table, mappings?, where?}]`. `table`은 선택한 테이블이어야 하고 테이블당 하나다. `mappings`(단건 이관과 같은 형식: `source,target,type,size,scale,steps`)를 생략하면 전체 컬럼 자동 매핑, 지정하면 목록의 컬럼만 이관한다. `where`는 단건 이관의 행 조건과 같은 검사를 거쳐 원본에만 적용한다.
+- `POST /connections/migrate/batch/verify` (일괄 이관 요청 본문, 읽기 전용) → `{items[{table,target,status("match"|"mismatch"|"missing"|"error"),sourceRows,targetRows,checked,mismatches[],notes[]}], matched, mismatched, failed}`. 테이블마다 단건 검증과 같은 집계를 비교하며 `failed`는 대상 없음과 검증 오류의 합이다.
 - **스케줄** `/api/v1/schedules`(로컬 전용): `GET` 목록 `{enabled, items[]}` / `POST` 등록 `{name, kind("single"|"batch"), request(= /migrate 또는 /migrate/batch 요청 본문), mode("interval"|"daily"), intervalMinutes(5~10080), dailyAt("HH:mm", 서버 시간대), refresh("append"|"replace"), confirmReplace}` / `POST /{id}/run` 지금 실행 / `POST /{id}/enabled {enabled}` / `DELETE /{id}`. 두 연결 모두 **비밀번호를 저장한 연결(savedId)**이어야 하고 정의에는 비밀번호가 저장되지 않는다. 실행마다 새 요청 ID로 일반 이관 작업을 시작하므로 작업 이력에 남는다. `replace`는 실행 전에 대상 테이블의 모든 행을 삭제하고(일괄 이관은 자식 테이블부터) 원본 전체를 다시 적재한다(동의 필수). 이전 회차가 진행 중이면 그 회차는 건너뛴다. 스케줄 이관은 이관 행 수 상한을 최대(1,000,000)로 두고, 일괄 이관은 이미 있는 테이블에 추가 적재한다.
 
 

@@ -37,7 +37,7 @@ CUBRID·Tibero의 현재 검증 범위와 TLS/자동 증가 컬럼 제한은 [DB
 - **행 조건(WHERE)과 컬럼 선택**: 입력을 검증해 DML/DDL·주석·세미콜론·`UNION` 등을 차단합니다
 - **값 변환 규칙**: 값 치환, 계산식 등. 안전한 평가기를 사용하며 임의 코드는 실행하지 않습니다
 - **이관 후 검증**: 원본·대상 건수와 집계 비교(전체 데이터 체크섬은 미구현)
-- **일괄 이관**: 여러 테이블·스키마를 외래 키 순서로 통째 이관(최대 200개), 중단 후 재개
+- **일괄 이관**: 여러 테이블·스키마를 외래 키 순서로 통째 이관(최대 200개), 중단 후 재개. 테이블별 행 조건·컬럼 제외·대상 컬럼 이름·값 변환 규칙, 이관 후 테이블별 검증
 - **스케줄**: 매일 정해진 시각 또는 일정 간격으로 자동 실행, 실행 때마다 대상을 비우고 다시 적재하는 모드. 비밀번호를 저장한 연결만 사용 가능
 
 ### 파일 변환
@@ -83,7 +83,7 @@ scripts/     Windows 실행 보조 스크립트
 
 ### 알려진 한계
 - 인증·권한 없음(위 사용 전제 참고). 스케줄러는 서버가 켜져 있는 동안에만 동작하고 서버 시간대를 따릅니다. 증분 이관·실행 결과 알림은 없습니다
-- 일괄 이관은 테이블별 컬럼 매핑·변환·행 조건을 지정할 수 없고(전체 컬럼 자동 매핑), 수백 개 테이블의 사전 점검은 느립니다
+- 일괄 이관은 대상 테이블 이름과 대상 타입을 화면에서 지정할 수 없고(타입은 API만 지원)
 - MySQL·MariaDB·Oracle은 DDL이 롤백되지 않아 새 테이블 생성 뒤 적재가 실패하면 빈 테이블이 남을 수 있습니다(PostgreSQL은 롤백)
 - 순환 외래 키는 안내만 하고 자동 처리하지 않습니다. 기본값 복제는 리터럴·불리언·현재 시각만 지원합니다
 - 변환 규칙에 날짜 포맷·정규식·조건(CASE)이 없고, 변환한 컬럼은 이관 후 값 비교에서 제외됩니다
@@ -173,7 +173,7 @@ $env:TABLEFLOW_TEST_JDBC='true'; $env:TABLEFLOW_TEST_JDBC_DBMS='oracle,postgresq
 - 프런트엔드: `frontend/.env.example`을 `.env.local`로 복사해 `NEXT_PUBLIC_API_URL` 설정
 - 백엔드: `PORT`(8080), `TABLEFLOW_FRONTEND_ORIGIN`(`http://localhost:3100`), `TABLEFLOW_OCR_URL`(`http://127.0.0.1:8000`), `TABLEFLOW_JDBC_ENABLED`, `TABLEFLOW_JDBC_LOAD_ENABLED`, `TABLEFLOW_SECRET_KEY`(저장 연결 암호화 키. 없으면 `data/connections.key`를 자동 생성). 괄호는 기본값입니다
 - OCR: `TABLEFLOW_OCR_PROVIDER`(mock), `TABLEFLOW_OCR_LANGUAGE`(korean), `TABLEFLOW_OCR_TIMEOUT_SECONDS`
-- 파일 최대 10MB, 10,000 데이터 행, 100열. PDF 최대 20페이지, OCR 이미지 최대 2,000만 픽셀. JSON 요청 최대 32MB, IP당 POST 120회/분, 동시 처리 4건
+- 파일 최대 10MB, 10,000 데이터 행, 100열. PDF 최대 20페이지, OCR 이미지 최대 2,000만 픽셀. JSON 요청 최대 32MB, IP당 POST 120회/분(`TABLEFLOW_POSTS_PER_MINUTE`로 변경), 동시 처리 4건
 - 파일 변환 중인 표는 서버에 영구 저장하지 않으며 새로고침하면 화면 작업이 사라집니다. 서버에는 작업 이력(`data/job-history.jsonl`), 작업 목록(`data/jobs.json`), 스케줄(`data/schedules.json`), 저장 연결이 남고 모두 Git에서 제외됩니다
 - 대상 DB에 적재된 행과 영수증은 롤백하지 않는 한 그대로 남습니다
 

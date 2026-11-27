@@ -5,8 +5,11 @@ import dev.tableflow.connection.JdbcExplorer.ColumnInfo;
 import dev.tableflow.connection.JdbcExplorer.Credentials;
 import dev.tableflow.connection.JdbcExplorer.Dbms;
 import dev.tableflow.connection.JdbcReader;
+import dev.tableflow.connection.RowFilter;
 import dev.tableflow.load.DatabaseLoader.LoadFailure;
 import dev.tableflow.load.MigrationService.Mapping;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.*;
 import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
@@ -22,17 +25,34 @@ public class BatchMigration {
     public static final int MAX_TABLES = 200;
     private static final Set<Integer> UNSUPPORTED = Set.of(-2, -3, -4, 2004, 2003, 2002, 2000, 1111, 2009, 2013);
 
-    private final JdbcExplorer explorer; private final JdbcReader reader; private final MigrationService migration;
-    public BatchMigration(JdbcExplorer explorer, JdbcReader reader, MigrationService migration) { this.explorer = explorer; this.reader = reader; this.migration = migration; }
+    private final JdbcExplorer explorer; private final JdbcReader reader; private final MigrationService migration; private final MigrationVerifier verifier;
+    public BatchMigration(JdbcExplorer explorer, JdbcReader reader, MigrationService migration, MigrationVerifier verifier) {
+        this.explorer = explorer; this.reader = reader; this.migration = migration; this.verifier = verifier;
+    }
 
-    /** state: pending / running / succeeded / skipped / failed. */
-    public record Item(String table, String target, String state, long totalRows, long doneRows, String message) {}
+    /** state: pending / running / succeeded / skipped / failed. created: 이 작업이 대상 테이블을 새로 만들기 시작했는지(재개 때 건너뛰지 않고 구조를 보완한다). */
+    public record Item(String table, String target, String state, long totalRows, long doneRows, String message, boolean created) {
+        public Item(String table, String target, String state, long totalRows, long doneRows, String message) { this(table, target, state, totalRows, doneRows, message, false); }
+    }
+    /** 테이블별 설정. mappings를 생략하면 전체 컬럼 자동 매핑, 지정하면 목록에 있는 컬럼만 이관한다. where는 원본에만 적용하는 행 조건. */
+    public record TableOption(@NotBlank @Size(max = 128) String table, @Size(max = 100) List<@NotNull @Valid Mapping> mappings, @Size(max = 1000) String where) {
+        @Override public String toString() { return "TableOption[" + table + "]"; }
+    }
     public interface BatchProgress extends MigrationService.Progress { void items(List<Item> items); }
     /** ifExists: 대상에 같은 이름 테이블이 있을 때 skip(건너뜀, 기본) 또는 append(추가 적재). */
-    public record Options(boolean preserveKeys, boolean copyIndexes, boolean copyDefaults, boolean copyForeignKeys, String ifExists, Integer chunkSize) {
+    public record Options(boolean preserveKeys, boolean copyIndexes, boolean copyDefaults, boolean copyForeignKeys, String ifExists, Integer chunkSize, List<TableOption> tableOptions) {
+        public Options(boolean preserveKeys, boolean copyIndexes, boolean copyDefaults, boolean copyForeignKeys, String ifExists, Integer chunkSize) {
+            this(preserveKeys, copyIndexes, copyDefaults, copyForeignKeys, ifExists, chunkSize, null);
+        }
         boolean append() { return "append".equals(ifExists); }
-        MigrationService.Extras extras() { return new MigrationService.Extras(copyIndexes, copyDefaults, copyForeignKeys, null); }
+        TableOption option(String table) { return tableOptions == null ? null : tableOptions.stream().filter(t -> t.table().equals(table)).findFirst().orElse(null); }
+        String where(String table) { TableOption t = option(table); return t == null ? null : RowFilter.clean(t.where()); }
+        MigrationService.Extras extras(String table) { return new MigrationService.Extras(copyIndexes, copyDefaults, copyForeignKeys, where(table)); }
     }
+    /** status: match / mismatch / missing(대상 테이블 없음) / error. mismatches에는 값이 다른 측정만 담는다. */
+    public record VerifyItem(String table, String target, String status, long sourceRows, long targetRows, int checked,
+                             List<MigrationVerifier.ColumnCheck> mismatches, List<String> notes) {}
+    public record VerifyResult(List<VerifyItem> items, int matched, int mismatched, int failed) {}
     public record PlanItem(String table, String target, long rows, int columns, List<String> excluded, boolean targetExists, String action, String level, List<String> messages) {}
     public record Plan(List<PlanItem> items, List<String> cycles, List<String> notes, long totalRows, boolean blocked) {}
 
@@ -47,16 +67,29 @@ public class BatchMigration {
 
     private record Prepared(String table, String target, boolean exists, List<Mapping> mappings, List<String> excluded) {}
 
-    /** 한 테이블의 자동 매핑: 이관할 수 없는 타입은 제외하고, 이름은 변환 규칙으로 정한다. 대상이 이미 있으면 실제 컬럼 이름에 대소문자 무시로 맞춘다. */
-    private Prepared prepare(Credentials source, String sourceSchema, String table, Credentials target, String targetSchema, Set<String> usedTargets, Map<String, String> targetTables) {
+    /** 한 테이블의 매핑: 지정이 없으면 자동(이관할 수 없는 타입은 제외, 이름은 변환 규칙), 지정이 있으면 그 컬럼만. 대상이 이미 있으면 실제 컬럼 이름에 대소문자 무시로 맞춘다. */
+    private Prepared prepare(Credentials source, String sourceSchema, String table, Credentials target, String targetSchema, Set<String> usedTargets, Map<String, String> targetTables, TableOption option) {
         String wanted = convert(target.dbms(), table, "TBL");
         String actual = targetTables.get(wanted.toLowerCase(Locale.ROOT));
         String targetName = actual != null ? actual : wanted;
         if (!usedTargets.add(targetName.toLowerCase(Locale.ROOT))) throw new IllegalArgumentException("서로 다른 원본 테이블이 같은 대상 이름(" + targetName + ")이 됩니다: " + table);
         Map<String, String> existingColumns = new HashMap<>();
         if (actual != null) for (ColumnInfo c : explorer.columns(target, targetSchema, actual).items()) existingColumns.put(c.name().toLowerCase(Locale.ROOT), c.name());
+        List<ColumnInfo> sourceColumns = explorer.columns(source, sourceSchema, table).items();
         List<Mapping> mappings = new ArrayList<>(); List<String> excluded = new ArrayList<>(); Set<String> used = new HashSet<>();
-        for (ColumnInfo c : explorer.columns(source, sourceSchema, table).items()) {
+        if (option != null && option.mappings() != null) {
+            Map<String, ColumnInfo> byName = new HashMap<>(); for (ColumnInfo c : sourceColumns) byName.put(c.name(), c);
+            for (Mapping m : option.mappings()) {
+                ColumnInfo c = byName.get(m.source());
+                if (c == null) throw new IllegalArgumentException(table + ": 원본에 없는 컬럼입니다(대소문자까지 일치해야 합니다): " + m.source());
+                if (UNSUPPORTED.contains(c.jdbcType())) throw new IllegalArgumentException(table + ": 이관할 수 없는 타입의 컬럼입니다: " + m.source());
+                String name = actual != null ? existingColumns.getOrDefault(m.target().toLowerCase(Locale.ROOT), m.target()) : m.target();
+                if (!used.add(name.toLowerCase(Locale.ROOT))) throw new IllegalArgumentException(table + ": 같은 대상 컬럼에 두 번 매핑할 수 없습니다: " + name);
+                mappings.add(new Mapping(m.source(), name, m.type(), m.size(), m.scale(), m.steps()));
+            }
+            Set<String> mapped = new HashSet<>(); for (Mapping m : mappings) mapped.add(m.source());
+            for (ColumnInfo c : sourceColumns) if (!mapped.contains(c.name())) excluded.add(c.name());
+        } else for (ColumnInfo c : sourceColumns) {
             if (UNSUPPORTED.contains(c.jdbcType())) { excluded.add(c.name()); continue; }
             String name = convert(target.dbms(), c.name(), "COL"), base = name; int n = 2;
             while (!used.add(name.toLowerCase(Locale.ROOT))) name = base + "_" + n++;
@@ -76,6 +109,16 @@ public class BatchMigration {
         if (tables.size() > MAX_TABLES) throw new IllegalArgumentException("한 번에 최대 " + MAX_TABLES + "개 테이블까지 이관할 수 있습니다.");
         if (new HashSet<>(tables).size() != tables.size()) throw new IllegalArgumentException("같은 테이블이 중복 선택되었습니다.");
     }
+    /** 테이블별 설정은 선택한 테이블에만, 테이블당 하나만 둘 수 있다. 행 조건은 시작 전에 검사한다. */
+    private static void checkOptions(List<String> tables, Options o) {
+        Set<String> seen = new HashSet<>();
+        for (TableOption t : o.tableOptions() == null ? List.<TableOption>of() : o.tableOptions()) {
+            if (!tables.contains(t.table())) throw new IllegalArgumentException("선택하지 않은 테이블의 설정이 있습니다: " + t.table());
+            if (!seen.add(t.table())) throw new IllegalArgumentException("같은 테이블의 설정이 두 번 있습니다: " + t.table());
+            if (t.mappings() != null && t.mappings().isEmpty()) throw new IllegalArgumentException("이관할 컬럼을 하나 이상 선택해주세요: " + t.table());
+            try { RowFilter.clean(t.where()); } catch (IllegalArgumentException e) { throw new IllegalArgumentException(t.table() + " 행 조건: " + e.getMessage()); }
+        }
+    }
     /** 부모가 먼저 오는 처리 순서. 서로 참조하는 테이블(순환)은 맨 뒤에 둔다. */
     private List<String> ordered(Credentials source, String schema, List<String> tables, List<String> cycles) {
         var plan = migration.order(source, schema, tables);
@@ -87,21 +130,27 @@ public class BatchMigration {
 
     // ---------------------------------------------------------------- 사전 점검
     public Plan plan(Credentials source, String sourceSchema, Credentials target, String targetSchema, List<String> tables, Options o) {
-        checkTables(tables);
+        return explorer.reusing(() -> inspect(source, sourceSchema, target, targetSchema, tables, o));
+    }
+    private Plan inspect(Credentials source, String sourceSchema, Credentials target, String targetSchema, List<String> tables, Options o) {
+        checkTables(tables); checkOptions(tables, o);
         List<String> cycles = new ArrayList<>(); List<String> order = ordered(source, sourceSchema, tables, cycles);
         Map<String, String> existing = targetTables(target, targetSchema);
         Set<String> used = new HashSet<>(); List<PlanItem> items = new ArrayList<>(); long total = 0; boolean blocked = false;
         for (String table : order) {
             Prepared p;
-            try { p = prepare(source, sourceSchema, table, target, targetSchema, used, existing); }
+            TableOption option = o.option(table); String where = o.where(table);
+            try { p = prepare(source, sourceSchema, table, target, targetSchema, used, existing, option); }
             catch (RuntimeException e) { items.add(new PlanItem(table, "", 0, 0, List.of(), false, "error", "error", List.of(JobHistory.describe(e)[1]))); blocked = true; continue; }
             String action = !p.exists() ? "create" : o.append() ? "append" : "skip";
             long rows = 0; String level = "ok"; List<String> messages = new ArrayList<>();
-            if (!p.excluded().isEmpty()) messages.add("이관할 수 없는 타입이라 제외: " + String.join(", ", p.excluded()));
+            boolean custom = option != null && option.mappings() != null;
+            if (!p.excluded().isEmpty()) messages.add((custom ? "컬럼 매핑에서 제외: " : "이관할 수 없는 타입이라 제외: ") + String.join(", ", p.excluded()));
+            if (where != null) messages.add("행 조건 적용: " + where);
             if (cycles.contains(table)) messages.add("서로 참조하는 테이블이라 FK를 복제하지 못할 수 있습니다. 이관 후 DB에서 FK를 추가하세요.");
-            if (action.equals("skip")) { messages.add("대상에 같은 이름의 테이블이 있어 건너뜁니다."); try { rows = reader.count(source, sourceSchema, table); } catch (RuntimeException ignored) { /* 건수는 참고용 */ } }
+            if (action.equals("skip")) { messages.add("대상에 같은 이름의 테이블이 있어 건너뜁니다."); try { rows = reader.count(source, sourceSchema, table, where); } catch (RuntimeException ignored) { /* 건수는 참고용 */ } }
             else try {
-                var a = migration.analyze(source, sourceSchema, table, target, targetSchema, p.target(), p.mappings(), true, o.preserveKeys(), o.extras());
+                var a = migration.analyze(source, sourceSchema, table, target, targetSchema, p.target(), p.mappings(), true, o.preserveKeys(), o.extras(table));
                 rows = a.sourceRows();
                 if (rows > a.maxRows()) { level = "error"; messages.add("원본이 " + rows + "행으로 서버 한도(" + a.maxRows() + "행)를 넘습니다."); }
                 for (var c : a.columns()) if (c.level().equals("error")) { level = "error"; messages.add(c.source() + ": " + c.detail()); } else if (c.level().equals("warn") && !level.equals("error")) level = "warn";
@@ -113,6 +162,8 @@ public class BatchMigration {
         }
         List<String> notes = new ArrayList<>();
         notes.add("부모 테이블(외래 키로 참조되는 테이블)부터 차례로 이관합니다." + (o.copyForeignKeys() ? " 선택한 범위 안의 부모가 먼저 만들어지므로 FK를 복제합니다." : ""));
+        if (o.copyForeignKeys() && tables.stream().anyMatch(t -> o.where(t) != null))
+            notes.add("행 조건을 적용한 테이블이 있습니다. 자식 행이 참조하는 부모 행이 조건에서 빠지면 외래 키 위반으로 해당 테이블에서 실패합니다.");
         if (!cycles.isEmpty()) notes.add("서로 참조하는 테이블: " + String.join(", ", cycles) + " — 맨 뒤에 이관하며 이 테이블들의 FK는 복제되지 않을 수 있습니다.");
         return new Plan(items, cycles, notes, total, blocked);
     }
@@ -128,23 +179,52 @@ public class BatchMigration {
         return migration.purgeTables(target, targetSchema, names);
     }
 
+    // ---------------------------------------------------------------- 이관 후 검증
+    /** 선택한 테이블마다 원본(행 조건 적용)과 대상의 행 수·집계를 비교한다. 읽기 전용이며 한 테이블의 오류가 나머지 검증을 막지 않는다. */
+    public VerifyResult verify(Credentials source, String sourceSchema, Credentials target, String targetSchema, List<String> tables, Options o) {
+        return explorer.reusing(() -> compare(source, sourceSchema, target, targetSchema, tables, o));
+    }
+    private VerifyResult compare(Credentials source, String sourceSchema, Credentials target, String targetSchema, List<String> tables, Options o) {
+        checkTables(tables); checkOptions(tables, o);
+        Map<String, String> existing = targetTables(target, targetSchema);
+        Set<String> used = new HashSet<>(); List<VerifyItem> items = new ArrayList<>(); int matched = 0, mismatched = 0, failed = 0;
+        for (String table : tables) {
+            String targetName = "";
+            try {
+                Prepared p = prepare(source, sourceSchema, table, target, targetSchema, used, existing, o.option(table)); targetName = p.target();
+                if (!p.exists()) { items.add(new VerifyItem(table, targetName, "missing", 0, 0, 0, List.of(), List.of("대상 테이블이 없습니다."))); failed++; continue; }
+                var r = verifier.verify(source, sourceSchema, table, target, targetSchema, targetName, p.mappings(), o.where(table));
+                items.add(new VerifyItem(table, targetName, r.allMatch() ? "match" : "mismatch", r.sourceRows(), r.targetRows(), r.checks().size(),
+                    r.checks().stream().filter(c -> !c.match()).toList(), r.notes()));
+                if (r.allMatch()) matched++; else mismatched++;
+            } catch (RuntimeException e) { items.add(new VerifyItem(table, targetName, "error", 0, 0, 0, List.of(), List.of(JobHistory.describe(e)[1]))); failed++; }
+        }
+        return new VerifyResult(items, matched, mismatched, failed);
+    }
+
     // ---------------------------------------------------------------- 실행
     /** prior: 이전 실행의 테이블별 결과(재개). 완료된 테이블은 건너뛰고, 실패·중단된 테이블은 이미 만들어져 있어도 이어서 적재한다. */
     public MigrationService.Outcome run(String batchId, Credentials source, String sourceSchema, Credentials target, String targetSchema, List<String> tables,
                                         Options o, List<Item> prior, BatchProgress progress) {
-        checkTables(tables);
-        List<String> cycles = new ArrayList<>(); List<String> order = ordered(source, sourceSchema, tables, cycles);
-        Map<String, String> existing = targetTables(target, targetSchema);
+        checkTables(tables); checkOptions(tables, o);
         Map<String, Item> before = new HashMap<>(); for (Item i : prior == null ? List.<Item>of() : prior) before.put(i.table(), i);
-        Set<String> used = new HashSet<>(); List<Prepared> prepared = new ArrayList<>(); long totalRows = 0; Map<String, Long> counts = new HashMap<>();
-        for (String table : order) {
-            Prepared p = prepare(source, sourceSchema, table, target, targetSchema, used, existing);
-            prepared.add(p); long n = reader.count(source, sourceSchema, table); counts.put(table, n); totalRows += n;
-        }
+        List<Prepared> prepared = new ArrayList<>(); Map<String, Long> counts = new HashMap<>();
+        // 적재(DDL) 전 준비 조회만 연결을 재사용한다.
+        explorer.reusing(() -> {
+            List<String> order = ordered(source, sourceSchema, tables, new ArrayList<>());
+            Map<String, String> existing = targetTables(target, targetSchema);
+            Set<String> used = new HashSet<>();
+            for (String table : order) {
+                prepared.add(prepare(source, sourceSchema, table, target, targetSchema, used, existing, o.option(table)));
+                counts.put(table, reader.count(source, sourceSchema, table, o.where(table)));
+            }
+            return null;
+        });
+        long totalRows = counts.values().stream().mapToLong(Long::longValue).sum();
         List<Item> items = new ArrayList<>();
         for (Prepared p : prepared) {
             Item b = before.get(p.table());
-            items.add(b != null && (b.state().equals("succeeded") || b.state().equals("skipped")) ? b : new Item(p.table(), p.target(), "pending", counts.get(p.table()), 0, null));
+            items.add(b != null && (b.state().equals("succeeded") || b.state().equals("skipped")) ? b : new Item(p.table(), p.target(), "pending", counts.get(p.table()), 0, null, b != null && b.created()));
         }
         progress.total(items.size(), totalRows); progress.items(items);
         long inserted = 0; int done = 0; int skipped = 0; List<String> notes = new ArrayList<>();
@@ -154,31 +234,38 @@ public class BatchMigration {
             Prepared p = prepared.get(i); Item cur = items.get(i);
             if (cur.state().equals("succeeded") || cur.state().equals("skipped")) continue;
             if (progress.cancelled()) throw new LoadFailure(409, "MIGRATION_CANCELLED", "취소했습니다. 완료된 테이블 " + done + "개는 유지되며, 같은 요청으로 재개하면 이어서 진행합니다.");
-            boolean resumedTable = before.containsKey(p.table()) && (before.get(p.table()).state().equals("failed") || before.get(p.table()).state().equals("running"));
+            Item last = before.get(p.table());
+            // 이 작업이 만들기 시작한 테이블은 취소(대기 상태)였더라도 건너뛰지 않고 이어서 적재한다.
+            boolean resumedTable = last != null && (last.created() || last.state().equals("failed") || last.state().equals("running"));
             if (p.exists() && !o.append() && !resumedTable) {
                 items.set(i, new Item(p.table(), p.target(), "skipped", cur.totalRows(), 0, "대상에 같은 이름의 테이블이 있어 건너뛰었습니다.")); skipped++; done++;
                 progress.items(items); progress.chunk(done, inserted, 0); continue;
             }
-            items.set(i, new Item(p.table(), p.target(), "running", cur.totalRows(), 0, null)); progress.items(items);
+            items.set(i, new Item(p.table(), p.target(), "running", cur.totalRows(), 0, null, cur.created())); progress.items(items);
             final int index = i; final long base = inserted; final int doneSoFar = done;
             MigrationService.Progress child = new MigrationService.Progress() {
                 @Override public void total(int chunks, long rows) { }
                 @Override public void chunk(int c, long rows, int replayed) {
-                    Item now = items.get(index); items.set(index, new Item(now.table(), now.target(), "running", now.totalRows(), rows, null));
+                    Item now = items.get(index); items.set(index, new Item(now.table(), now.target(), "running", now.totalRows(), rows, null, now.created()));
                     progress.items(items); progress.chunk(doneSoFar, base + rows, 0);
                 }
                 @Override public boolean cancelled() { return progress.cancelled(); }
+                @Override public boolean createdTarget(String key) { return items.get(index).created(); }
+                @Override public void targetCreated(String key) {
+                    Item now = items.get(index); items.set(index, new Item(now.table(), now.target(), now.state(), now.totalRows(), now.doneRows(), now.message(), true));
+                    progress.items(items);
+                }
             };
             try {
                 String id = UUID.nameUUIDFromBytes((batchId + ":" + p.table()).getBytes(StandardCharsets.UTF_8)).toString();
                 int chunk = o.chunkSize() == null ? migration.defaultChunkSize() : o.chunkSize();
-                var out = migration.runBulk(source, sourceSchema, p.table(), target, targetSchema, p.target(), p.mappings(), Integer.MAX_VALUE, true, o.preserveKeys(), id, child, chunk, o.extras());
-                items.set(i, new Item(p.table(), p.target(), "succeeded", cur.totalRows(), out.insertedRows(), out.notes().isEmpty() ? null : String.join(" ", out.notes())));
+                var out = migration.runBulk(source, sourceSchema, p.table(), target, targetSchema, p.target(), p.mappings(), Integer.MAX_VALUE, true, o.preserveKeys(), id, child, chunk, o.extras(p.table()));
+                items.set(i, new Item(p.table(), p.target(), "succeeded", cur.totalRows(), out.insertedRows(), out.notes().isEmpty() ? null : String.join(" ", out.notes()), items.get(i).created()));
                 inserted += out.insertedRows(); done++; progress.items(items); progress.chunk(done, inserted, 0);
             } catch (RuntimeException e) {
-                if (e instanceof LoadFailure f && "MIGRATION_CANCELLED".equals(f.code)) { items.set(i, new Item(p.table(), p.target(), "pending", cur.totalRows(), 0, "취소됨")); progress.items(items); throw e; }
+                if (e instanceof LoadFailure f && "MIGRATION_CANCELLED".equals(f.code)) { items.set(i, new Item(p.table(), p.target(), "pending", cur.totalRows(), 0, "취소됨", items.get(i).created())); progress.items(items); throw e; }
                 String[] d = JobHistory.describe(e);
-                items.set(i, new Item(p.table(), p.target(), "failed", cur.totalRows(), items.get(i).doneRows(), d[1])); progress.items(items);
+                items.set(i, new Item(p.table(), p.target(), "failed", cur.totalRows(), items.get(i).doneRows(), d[1], items.get(i).created())); progress.items(items);
                 throw new LoadFailure(e instanceof LoadFailure f ? f.status : 422, d[0], "테이블 " + p.table() + "에서 실패했습니다. " + d[1] + " 앞선 " + done
                     + "개 테이블은 완료되었습니다. 원인을 해결한 뒤 재개하면 완료된 테이블은 건너뛰고 이 테이블부터 이어서 진행합니다.");
             }

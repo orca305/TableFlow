@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { remove, request } from "@/lib/api";
 import type { SavedConnection, ServerInfo } from "@/lib/connections";
+import BatchTableSettings, { settingProblem, tableOptionsOf, type TableSetting } from "./BatchTableSettings";
 import ConnectionPicker, { type Verified } from "./ConnectionPicker";
 import ScheduleForm from "./ScheduleForm";
 import { Help } from "./ui";
@@ -11,6 +12,10 @@ type PlanItem = { table: string; target: string; rows: number; columns: number; 
 type Plan = { items: PlanItem[]; cycles: string[]; notes: string[]; totalRows: number; blocked: boolean };
 type Item = { table: string; target: string; state: "pending" | "running" | "succeeded" | "skipped" | "failed"; totalRows: number; doneRows: number; message: string | null };
 type Job = { id: string; state: "queued" | "running" | "succeeded" | "failed" | "cancelled"; totalRows: number; doneRows: number; totalChunks: number; doneChunks: number; message: string | null; items: Item[] | null; notes: string[] };
+type Check = { source: string; target: string; measure: string; sourceValue: string; targetValue: string; match: boolean; note: string };
+type VerifyItem = { table: string; target: string; status: "match" | "mismatch" | "missing" | "error"; sourceRows: number; targetRows: number; checked: number; mismatches: Check[]; notes: string[] };
+type Verification = { items: VerifyItem[]; matched: number; mismatched: number; failed: number };
+const verifyLabel = { match: "일치", mismatch: "불일치", missing: "대상 없음", error: "검증 실패" } as const;
 const fmt = (n: number) => n.toLocaleString("ko-KR");
 const actionLabel = { create: "새로 생성", append: "추가 적재", skip: "건너뜀", error: "오류" } as const;
 const stateLabel = { pending: "대기", running: "진행 중", succeeded: "완료", skipped: "건너뜀", failed: "실패" } as const;
@@ -29,6 +34,7 @@ export default function BatchPage({ server, saved, reloadSaved, onHistoryChanged
   const [ifExists, setIfExists] = useState<"skip" | "append">("skip"); const [chunkText, setChunkText] = useState("");
   const [plan, setPlan] = useState<Plan | null>(null); const [confirmed, setConfirmed] = useState(false); const [requestId, setRequestId] = useState("");
   const [job, setJob] = useState<Job | null>(null);
+  const [settings, setSettings] = useState<Record<string, TableSetting>>({}); const [verify, setVerify] = useState<Verification | null>(null); const [verifying, setVerifying] = useState(false);
   const [busy, setBusy] = useState(false); const [error, setError] = useState("");
 
   const chunk = Number(chunkText.replace(/\D/g, "")); const chunkValid = chunkText === "" || (chunk >= 100 && chunk <= 10000);
@@ -36,22 +42,24 @@ export default function BatchPage({ server, saved, reloadSaved, onHistoryChanged
   const selected = useMemo(() => tables.filter(t => picked.has(t)), [tables, picked]);
   const shown = useMemo(() => tables.filter(t => t.toLowerCase().includes(filter.trim().toLowerCase())), [tables, filter]);
   const supportsIdentity = server?.drivers.find(d => d.dbms === dstV?.connection.dbms)?.capabilities?.preserveKeys !== false;
+  const dbms = dstV?.connection.dbms;
+  const problem = dbms ? settingProblem(settings, selected, dbms) : "";
   const body = () => ({ source: srcV!.connection, sourceSchema: schema, target: dstV!.connection, targetSchema: dstSchema, tables: selected, preserveKeys: keys && supportsIdentity, copyIndexes: idx, copyDefaults: defs,
-    copyForeignKeys: fks, ifExists, chunkSize: chunkText === "" ? undefined : chunk });
-  function reset() { setPlan(null); setConfirmed(false); setRequestId(""); setJob(null); setError(""); }
+    copyForeignKeys: fks, ifExists, chunkSize: chunkText === "" ? undefined : chunk, tableOptions: tableOptionsOf(settings, selected, dstV!.connection.dbms) });
+  function reset() { setPlan(null); setConfirmed(false); setRequestId(""); setJob(null); setVerify(null); setError(""); }
   async function guarded(action: () => Promise<void>) {
     setBusy(true); setError("");
     try { await action(); } catch (reason) { setError(reason instanceof Error ? reason.message : "요청을 처리하지 못했습니다."); } finally { setBusy(false); onHistoryChanged(); }
   }
 
   useEffect(() => { // 원본 연결이 확인되면 스키마 목록
-    setSchemas([]); setSchema(""); setTables([]); setPicked(new Set()); reset();
+    setSchemas([]); setSchema(""); setTables([]); setPicked(new Set()); setSettings({}); reset();
     if (!srcV) return;
     request("/connections/schemas", srcV.connection).then(r => r.json()).then(r => { setSchemas(r.items); if (r.items.length === 1) setSchema(r.items[0]); }).catch(reason => setError(reason instanceof Error ? reason.message : "스키마를 불러오지 못했습니다."));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [srcV]);
   useEffect(() => {
-    setTables([]); setPicked(new Set()); reset();
+    setTables([]); setPicked(new Set()); setSettings({}); reset();
     if (!srcV || !schema) return;
     request("/connections/tables", { connection: srcV.connection, schema }).then(r => r.json()).then(r => setTables(r.items)).catch(reason => setError(reason instanceof Error ? reason.message : "테이블을 불러오지 못했습니다."));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,10 +82,16 @@ export default function BatchPage({ server, saved, reloadSaved, onHistoryChanged
     return () => clearTimeout(timer);
   }, [job, active, onHistoryChanged]);
 
-  const ready = !!srcV && !!dstV && !!schema && !!dstSchema && selected.length > 0 && chunkValid;
+  const ready = !!srcV && !!dstV && !!schema && !!dstSchema && selected.length > 0 && chunkValid && !problem;
   const toggle = (t: string, on: boolean) => { setPicked(cur => { const next = new Set(cur); if (on) next.add(t); else next.delete(t); return next; }); reset(); };
   const allShown = shown.length > 0 && shown.every(t => picked.has(t));
   const items: Item[] | null = job?.items ?? null; const failed = job?.state === "failed" || job?.state === "cancelled";
+  const loaded = items?.filter(i => i.state === "succeeded").map(i => i.table) ?? [];
+  async function runVerify() {
+    setVerifying(true); setError(""); setVerify(null);
+    try { const all = body(); setVerify(await (await request("/connections/migrate/batch/verify", { ...all, tables: loaded, tableOptions: all.tableOptions?.filter(o => loaded.includes(o.table)) })).json()); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "검증하지 못했습니다."); } finally { setVerifying(false); }
+  }
   const start = () => guarded(async () => { setJob(await (await request("/connections/migrate/batch", { ...body(), requestId, confirmed: true })).json()); });
 
   return <div className="grid">
@@ -131,6 +145,11 @@ export default function BatchPage({ server, saved, reloadSaved, onHistoryChanged
         </div>
       </div></div>
 
+    {schema && srcV && dbms && selected.length > 0 && <div role="region" className="panel" aria-label="일괄 이관 테이블 설정">
+      <div className="grid"><BatchTableSettings connection={srcV.connection} schema={schema} tables={selected} dbms={dbms} settings={settings} disabled={working}
+        onChange={(table, next) => { setSettings(cur => { const copy = { ...cur }; if (next) copy[table] = next; else delete copy[table]; return copy; }); reset(); }} />
+        {problem && <p className="mapsum bad" role="status">{problem}</p>}</div></div>}
+
     {ready && <div role="region" className="panel" aria-label="일괄 이관 실행"><h2>점검 및 실행</h2>
       <div className="grid">
         <div className="row"><button type="button" className="btn" disabled={working || !server?.loadEnabled} data-tip="아무것도 쓰지 않고 처리 순서, 테이블별 행 수, 이름 충돌, 컬럼 오류를 확인합니다." onClick={() => void guarded(async () => {
@@ -155,6 +174,14 @@ export default function BatchPage({ server, saved, reloadSaved, onHistoryChanged
           {items && <div className="table-scroll"><table className="fit" aria-label="테이블별 진행 현황"><thead><tr><th>원본 테이블</th><th>대상 테이블</th><th>상태</th><th>행</th><th>비고</th></tr></thead><tbody>
             {items.map(i => <tr key={i.table}><td>{i.table}</td><td>{i.target}</td><td>{stateLabel[i.state]}</td><td>{fmt(i.doneRows)} / {fmt(i.totalRows)}</td><td className="wrap">{i.message ?? ""}</td></tr>)}</tbody></table></div>}
           {job.state === "succeeded" && job.notes.length > 0 && <div className="alert success"><ul>{job.notes.map(n => <li key={n}>{n}</li>)}</ul></div>}</div>}
+        {job && !active && loaded.length > 0 && <div className="grid" role="group" aria-label="일괄 이관 검증">
+          <div className="row"><button type="button" className="btn" disabled={verifying || working} data-tip="이관한 테이블마다 원본(행 조건 적용)과 대상의 행 수와 합계·최소·최대·문자열 길이를 비교합니다. 아무것도 쓰지 않습니다." onClick={() => void runVerify()}>{verifying ? "검증 중…" : `이관 결과 검증 (${loaded.length}개 테이블)`}</button>
+            {verify && <span className={`pill ${verify.mismatched + verify.failed === 0 ? "ok" : "bad"}`} role="status">일치 {verify.matched} · 불일치 {verify.mismatched} · 실패 {verify.failed}</span>}</div>
+          {verify && <div className="table-scroll"><table className="fit" aria-label="일괄 이관 검증 결과"><thead><tr><th>원본 테이블</th><th>대상 테이블</th><th>원본 행</th><th>대상 행</th><th>결과</th><th>상세</th></tr></thead><tbody>
+            {verify.items.map(v => <tr key={v.table}><td>{v.table}</td><td>{v.target}</td><td>{fmt(v.sourceRows)}</td><td>{fmt(v.targetRows)}</td>
+              <td><span className={`pill ${v.status === "match" ? "ok" : "bad"}`}>{verifyLabel[v.status]}</span></td>
+              <td className="wrap">{v.mismatches.map(c => <small key={`${c.source}-${c.measure}`}>{c.source} {c.measure}: 원본 {c.sourceValue} / 대상 {c.targetValue}</small>)}{v.notes.map(n => <small key={n}>{n}</small>)}</td></tr>)}</tbody></table></div>}
+        </div>}
         {plan && !plan.blocked && <ScheduleForm kind="batch" build={() => body()} canSchedule={!!srcV?.connection.savedId && !!dstV?.connection.savedId} defaultName={`${schema} 일괄 이관 (${selected.length}개)`} disabled={working} />}
       </div></div>}
   </div>;

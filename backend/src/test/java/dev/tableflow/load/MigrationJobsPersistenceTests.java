@@ -52,6 +52,27 @@ class MigrationJobsPersistenceTests {
         assertFalse(Files.readString(dir.resolve("jobs.json")).toLowerCase().contains("\"password\" : \"s"), "저장 파일에 비밀번호가 없다");
     }
 
+    void await(MigrationJobs jobs, String id) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline && Set.of("queued", "running").contains(jobs.get(id).state())) Thread.sleep(20);
+    }
+    @Test void createdTargetSurvivesRestartAndIsInheritedOnlyByUnfinishedRetries() throws Exception {
+        var store = store(); var first = new MigrationJobs(store);
+        first.submit("job-t", definition(null), "A", "B", progress -> { progress.targetCreated("pg|public|t"); throw new IllegalArgumentException("인덱스 생성 실패"); });
+        await(first, "job-t");
+        var restarted = new MigrationJobs(store); restarted.restore();
+        var seen = new ArrayList<Boolean>();
+        java.util.function.Function<MigrationService.Progress, MigrationService.Outcome> retry = progress -> {
+            seen.add(progress.createdTarget("pg|public|t")); seen.add(progress.createdTarget("pg|public|other"));
+            return new MigrationService.Outcome("job-t", "t", 0, false, List.of(), 0, 0);
+        };
+        restarted.submit("job-t", definition(null), "A", "B", retry); await(restarted, "job-t");
+        assertEquals(List.of(true, false), seen, "재시작 뒤에도 같은 대상 테이블만 이 작업이 만든 것으로 본다");
+        seen.clear();
+        restarted.submit("job-t", definition(null), "A", "B", retry); await(restarted, "job-t");
+        assertEquals(List.of(false, false), seen, "성공한 작업을 다시 제출하면 대상 구조를 보완하지 않는다");
+    }
+
     @Test void disabledStoreKeepsNothing() {
         var off = new JobStore(false, dir.resolve("none.json").toString(), json);
         off.put(new JobStore.Stored("x", running("x"), definition(null), "", ""));

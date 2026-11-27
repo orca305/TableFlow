@@ -31,12 +31,14 @@ public class MigrationJobs {
     private final class Job implements BatchMigration.BatchProgress {
         final String id; volatile boolean cancel; String state = "queued"; long totalRows, doneRows; int totalChunks, doneChunks, replayedChunks;
         String errorCode, message, startedAt = Instant.now().toString(), finishedAt; List<String> notes = List.of(); List<BatchMigration.Item> items;
-        JsonNode definition; String sourceLabel = "", targetLabel = "";
+        JsonNode definition; String sourceLabel = "", targetLabel = ""; String createdTarget;
         Job(String id) { this.id = id; }
         @Override public synchronized void total(int chunks, long rows) { state = "running"; totalChunks = chunks; totalRows = rows; persist(this); }
         @Override public synchronized void chunk(int done, long rows, int replayed) { doneChunks = done; doneRows = rows; replayedChunks = replayed; persist(this); }
         @Override public synchronized void items(List<BatchMigration.Item> next) { items = List.copyOf(next); persist(this); }
         @Override public boolean cancelled() { return cancel; }
+        @Override public synchronized boolean createdTarget(String key) { return key.equals(createdTarget); }
+        @Override public synchronized void targetCreated(String key) { createdTarget = key; persist(this); }
         synchronized Status snapshot() { return new Status(id, state, totalRows, doneRows, totalChunks, doneChunks, replayedChunks, errorCode, message, startedAt, finishedAt, notes, items); }
         synchronized boolean active() { return state.equals("queued") || state.equals("running"); }
     }
@@ -48,7 +50,7 @@ public class MigrationJobs {
     private final JobStore store;
     public MigrationJobs(JobStore store) { this.store = store; }
 
-    private void persist(Job job) { store.put(new JobStore.Stored(job.id, job.snapshot(), job.definition, job.sourceLabel, job.targetLabel)); }
+    private void persist(Job job) { store.put(new JobStore.Stored(job.id, job.snapshot(), job.definition, job.sourceLabel, job.targetLabel, job.createdTarget)); }
 
     /** 서버를 다시 시작하면 저장된 작업 목록을 복원한다. 그때 실행 중이던 작업은 중단된 것으로 표시한다(재개 가능). */
     @PostConstruct void restore() {
@@ -57,6 +59,7 @@ public class MigrationJobs {
             job.state = s.state(); job.totalRows = s.totalRows(); job.doneRows = s.doneRows(); job.totalChunks = s.totalChunks(); job.doneChunks = s.doneChunks();
             job.replayedChunks = s.replayedChunks(); job.errorCode = s.errorCode(); job.message = s.message(); job.startedAt = s.startedAt(); job.finishedAt = s.finishedAt();
             job.notes = s.notes() == null ? List.of() : s.notes(); job.items = s.items(); job.definition = st.definition(); job.sourceLabel = st.source() == null ? "" : st.source(); job.targetLabel = st.target() == null ? "" : st.target();
+            job.createdTarget = st.createdTarget();
             if (job.active()) {
                 job.state = "failed"; job.errorCode = "SERVER_RESTARTED"; job.finishedAt = Instant.now().toString();
                 job.message = "서버가 다시 시작되어 이관이 중단되었습니다. 재개하면 완료된 분량은 건너뛰고 이어서 진행합니다.";
@@ -73,7 +76,10 @@ public class MigrationJobs {
         synchronized (jobs) {
             Job existing = jobs.get(id);
             if (existing != null && existing.active()) return existing.snapshot();
-            Job job = new Job(id); job.definition = definition; job.sourceLabel = sourceLabel; job.targetLabel = targetLabel; jobs.remove(id); jobs.put(id, job); persist(job);
+            Job job = new Job(id); job.definition = definition; job.sourceLabel = sourceLabel; job.targetLabel = targetLabel;
+            // 재개(끝나지 않은 같은 ID)면 만든 테이블 정보를 이어받는다. 성공한 작업의 재제출은 대상 구조를 바꾸지 않는다.
+            if (existing != null && !existing.snapshot().state().equals("succeeded")) job.createdTarget = existing.createdTarget;
+            jobs.remove(id); jobs.put(id, job); persist(job);
             while (jobs.size() > KEEP) { // 오래된 완료 작업부터 정리
                 var it = jobs.values().iterator();
                 Job oldest = it.next();
