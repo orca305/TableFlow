@@ -169,10 +169,12 @@ public class ConnectionController {
     Object submitBatch(BatchRequest r){
         var definition=json.valueToTree(r.forStorage(store));
         String src=r.source().dbms()+" · "+r.source().database()+" · "+r.sourceSchema()+" ("+r.tables().size()+"개 테이블)", dst=r.target().dbms()+" · "+r.target().database()+" · "+r.targetSchema();
-        var prior=jobs.items(r.requestId());
-        return jobs.submit(r.requestId(),definition,src,dst,progress->history.track("migrate",r.requestId(),src,dst,
-            ()->batch.run(r.requestId(),r.source(),r.sourceSchema(),r.target(),r.targetSchema(),r.tables(),r.options(),prior,(dev.tableflow.load.BatchMigration.BatchProgress)progress),
-            dev.tableflow.load.MigrationService.Outcome::asResult));
+        return jobs.submit(r.requestId(),definition,src,dst,progress->{
+            var batchProgress=(dev.tableflow.load.BatchMigration.BatchProgress)progress; // 이전 실행 결과는 실행권을 얻을 때 함께 넘겨받는다
+            return history.track("migrate",r.requestId(),src,dst,
+                ()->batch.run(r.requestId(),r.source(),r.sourceSchema(),r.target(),r.targetSchema(),r.tables(),r.options(),batchProgress.previousItems(),batchProgress),
+                dev.tableflow.load.MigrationService.Outcome::asResult);
+        });
     }
     /** 대용량(10,000행 초과) DB→DB: 백그라운드로 시작하고 진행률을 조회한다. 같은 requestId로 다시 제출하면 완료된 청크는 건너뛰고 이어서 진행한다. */
     @PostMapping("/migrate/jobs") public Object migrateJob(@Valid @RequestBody MigrateRequest r){

@@ -28,6 +28,8 @@ public class StateDbConfig {
         config.setMaximumPoolSize(10); config.setMinimumIdle(1);
         config.setConnectionTimeout(5_000); config.setValidationTimeout(3_000);
         config.addDataSourceProperty("connectTimeout", "5");
+        // 응답이 끊긴 상태 DB를 무한정 기다리지 않는다(작업 생존 신호가 멈추면 안 된다).
+        config.addDataSourceProperty("socketTimeout", "30");
         config.addDataSourceProperty("ApplicationName", "TableFlow state");
         try { return new HikariDataSource(config); }
         catch (HikariPool.PoolInitializationException e) {

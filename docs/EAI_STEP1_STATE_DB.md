@@ -1,6 +1,6 @@
 # EAI 1단계 상세 설계: 상태 DB
 
-작성: 2026-11-27. 상태: **1-a~1-c 구현**, 1-d 이후 구현 전. 상위 문서: [EAI 설계 기준](EAI_ARCHITECTURE.md) §10·§13.
+작성: 2026-11-27. 상태: **1-a~1-d 구현**, 1-e 이후 구현 전. 상위 문서: [EAI 설계 기준](EAI_ARCHITECTURE.md) §10·§13.
 
 ## 1. 목적과 범위
 
@@ -54,7 +54,7 @@
 | `connection` | id uuid, name, dbms, host, port, database_name, username, tls, password_enc(null 가능), driver_id(null 가능), saved_at | PK id, UNIQUE name |
 | `jdbc_driver` | id uuid, dbms, version, sha256, size_bytes, jar bytea, registered_at | UNIQUE (dbms, version), UNIQUE (dbms, sha256) |
 | `schedule` | id uuid, name, kind, request jsonb, mode, interval_minutes, daily_at, refresh, enabled, created_at, next_run_at, last_run_at, last_state, last_message, last_job_id, source_label, target_label, version | PK id, 색인 (enabled, next_run_at) |
-| `migration_job` | id varchar(64), state, status jsonb, definition jsonb(null 가능), source_label, target_label, created_target, owner_id, heartbeat_at, created_at, updated_at | PK id, 색인 (state), (updated_at) |
+| `migration_job` | id varchar(64), seq(제출 순번), state, status jsonb, definition jsonb(null 가능), source_label, target_label, created_target, owner_id, heartbeat_at, cancel_requested, updated_at | PK id, UNIQUE seq, 색인 (state). 목록과 정리는 seq 기준(다시 제출하면 맨 앞) |
 | `job_history` | id uuid, seq(기록 순번), kind, request_id, started_at, duration_ms, status, source, target, row_count, error_code, message | PK id, UNIQUE seq. 최신순과 정리는 지금처럼 **기록한 순서**(seq) 기준 |
 | `app_meta` | key, value, updated_at | PK key (가져오기 완료 표시 등) |
 
@@ -76,11 +76,13 @@
 
 ### 6.2 이관 작업: 실행권
 
-- 작업을 실행하는 서버는 `owner_id`(시작할 때마다 새 값)를 기록하고 10초마다 `heartbeat_at`을 갱신한다.
-- **갱신이 60초 넘게 끊긴** `queued`·`running` 작업만 `SERVER_RESTARTED`(중단, 재개 가능)로 바꾼다. 살아 있는 다른 서버의 작업은 건드리지 않는다.
-- 같은 id의 중복 제출은 "진행 중이 아닐 때만 갱신"하는 한 문장으로 막는다.
-- 실행권을 잃은 서버는 다음 분할을 시작하지 않는다. 적재 영수증이 중복 적재를 막는 것은 지금과 같다.
-- 숫자(10초·60초)는 설정으로 바꿀 수 있게 한다.
+- 작업을 실행할 때 `owner_id`(**실행마다** 새 값)를 기록하고 10초마다 `heartbeat_at`을 갱신한다. 시간 비교는 서버 시계가 아니라 DB 시각을 쓴다.
+- **갱신이 60초 넘게 끊긴** `queued`·`running` 작업만 `SERVER_RESTARTED`(중단, 재개 가능)로 바꾸고 `owner_id`를 비운다. 각 서버가 시작할 때와 갱신 간격마다 확인한다. 살아 있는 다른 서버의 작업은 건드리지 않는다.
+  - 따라서 서버가 **강제로 꺼지면** 그 작업은 최대 60초 동안 "진행 중"으로 보인 뒤 "중단"이 된다. **정상 종료**는 그 자리에서 "중단"으로 남겨 바로 재개할 수 있다.
+- 같은 id의 동시 제출은 작업 id별 DB 권고 잠금 + 행 잠금으로 차례 처리한다. 살아 있는 실행이 있으면 새로 시작하지 않고 그 상태를 돌려준다.
+- 실행권을 잃은 실행은 상태를 저장하지 못하고 다음 분할을 시작하지 않는다. 차례를 기다리던 작업이면 대상 DB를 건드리지 않고 끝난다. 적재 영수증이 중복 적재를 막는 것은 지금과 같다.
+- 다른 서버가 실행 중인 작업의 중지는 `cancel_requested`로 남기고, 실행 서버가 다음 분할 전에 확인한다.
+- 숫자는 `TABLEFLOW_JOBS_HEARTBEAT_SECONDS`(10)·`TABLEFLOW_JOBS_LEASE_SECONDS`(60)로 바꾼다. 만료는 간격의 2배 이상이어야 하며, 같은 상태 DB를 쓰는 서버는 같은 값을 쓴다.
 
 ### 6.3 상태 DB에 문제가 있을 때
 
@@ -88,7 +90,7 @@
 |---|---|
 | 시작할 때 접속 불가·마이그레이션 실패 | 서버를 시작하지 않고 원인을 알림 |
 | 실행 중 이력 저장 실패 | 지금처럼 이관 결과에는 영향 없음. 로그 경고 |
-| 실행 중 진행 상황 저장 실패 | 이관은 계속, 다음 저장에서 반영. 60초 넘게 갱신하지 못하면 새 분할을 시작하지 않음 |
+| 실행 중 진행 상황 저장 실패 | 이관은 계속, 다음 저장에서 반영(끝난 결과도 저장될 때까지 다시 시도). 60초 넘게 갱신하지 못하면 새 분할을 시작하지 않고 `STATE_LEASE_LOST`(재개 가능) |
 | 연결·스케줄·작업 API 호출 실패 | 503 `STATE_DB_UNAVAILABLE`, 접속 정보를 노출하지 않는 안내 |
 | 상태 확인(`/api/v1/health`) | 상태 DB 연결 여부를 포함 |
 
@@ -141,7 +143,7 @@
 | 1-a ✔ | 의존성, 설정, Flyway V1(`app_meta`), 상태 확인, 개발·CI 컨테이너. 표는 단계마다 새 버전으로 추가 | 빈 DB에서 시작, 설정이 없으면 명확히 실패 |
 | 1-b ✔ | 작업 이력(Flyway V2) | 이력 화면 동작 유지 |
 | 1-c ✔ | 저장 연결·드라이버(Flyway V3). 저장·등록은 DB 권고 잠금으로 차례 처리, 드라이버 사본은 없으면 DB에서 복원 | 기존 연결·드라이버 시험 통과 |
-| 1-d | 이관 작업·실행권 | 재개·재시작·경쟁 시험 |
+| 1-d ✔ | 이관 작업·실행권(Flyway V4) | 재개·재시작·경쟁 시험 |
 | 1-e | 스케줄 | 중복 실행 방지 시험 |
 | 1-f | JSON 가져오기 | 가져오기 시험 |
 | 1-g | 전체 회귀, 설치 목록(버전·해시·라이선스) 갱신, 문서·명령 갱신 | §9 통과, 외부망 차단 상태에서 빌드된 결과물이 동작, 문서 일치 |

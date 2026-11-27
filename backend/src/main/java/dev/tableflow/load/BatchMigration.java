@@ -38,7 +38,11 @@ public class BatchMigration {
     public record TableOption(@NotBlank @Size(max = 128) String table, @Size(max = 100) List<@NotNull @Valid Mapping> mappings, @Size(max = 1000) String where) {
         @Override public String toString() { return "TableOption[" + table + "]"; }
     }
-    public interface BatchProgress extends MigrationService.Progress { void items(List<Item> items); }
+    public interface BatchProgress extends MigrationService.Progress {
+        void items(List<Item> items);
+        /** 같은 요청 ID의 이전 실행이 남긴 테이블별 결과. 재개할 때 앞에서 만든 테이블을 알아보는 데 쓴다. */
+        default List<Item> previousItems() { return List.of(); }
+    }
     /** ifExists: 대상에 같은 이름 테이블이 있을 때 skip(건너뜀, 기본) 또는 append(추가 적재). */
     public record Options(boolean preserveKeys, boolean copyIndexes, boolean copyDefaults, boolean copyForeignKeys, String ifExists, Integer chunkSize, List<TableOption> tableOptions,
                           boolean dropEmptyOnFailure) {

@@ -133,10 +133,14 @@ public class ScheduleService {
         }
         return from.plus(Duration.ofMinutes(s.intervalMinutes()));
     }
-    private boolean isActive(String jobId) {
-        if (jobId == null) return false;
-        try { String st = jobs.get(jobId).state(); return st.equals("queued") || st.equals("running"); } catch (RuntimeException e) { return false; }
+    /** 작업 기록이 없을 때만 비어 있다. 상태 DB를 읽지 못한 것은 "없음"이 아니므로 예외를 그대로 올려, 중복 실행이나 잘못된 결과 기록을 막는다. */
+    private Optional<MigrationJobs.Status> job(String jobId) {
+        if (jobId == null) return Optional.empty();
+        try { return Optional.of(jobs.get(jobId)); }
+        catch (Failure e) { if ("JOB_NOT_FOUND".equals(e.code)) return Optional.empty(); throw e; }
     }
+    private static boolean active(MigrationJobs.Status st) { return st.state().equals("queued") || st.state().equals("running"); }
+    private boolean isActive(String jobId) { return job(jobId).map(ScheduleService::active).orElse(false); }
 
     private void tickSafely() { try { tick(); } catch (Throwable t) { log.warn("스케줄 점검 중 오류: {}", t.getClass().getSimpleName()); } }
     /** 진행 중이던 회차의 결과를 반영하고, 시각이 된 스케줄을 실행한다. */
@@ -147,10 +151,13 @@ public class ScheduleService {
             List<Schedule> all = store.all(); boolean changed = false;
             for (int i = 0; i < all.size(); i++) {
                 Schedule s = all.get(i);
-                if ("running".equals(s.lastState()) && s.lastJobId() != null && !isActive(s.lastJobId())) {
-                    String state = "failed", message = "작업 기록을 찾을 수 없습니다.";
-                    try { var st = jobs.get(s.lastJobId()); state = st.state().equals("succeeded") ? "succeeded" : st.state(); message = st.state().equals("succeeded") ? summary(st) : st.message(); } catch (RuntimeException ignored) { /* 기록 없음 */ }
-                    s = s.with(s.enabled(), s.lastRunAt(), state, message, s.lastJobId(), s.nextRunAt()); all.set(i, s); changed = true;
+                if ("running".equals(s.lastState()) && s.lastJobId() != null) {
+                    var found = job(s.lastJobId());
+                    if (found.isEmpty() || !active(found.get())) {
+                        String state = found.map(MigrationJobs.Status::state).orElse("failed");
+                        String message = found.map(st -> st.state().equals("succeeded") ? summary(st) : st.message()).orElse("작업 기록을 찾을 수 없습니다.");
+                        s = s.with(s.enabled(), s.lastRunAt(), state, message, s.lastJobId(), s.nextRunAt()); all.set(i, s); changed = true;
+                    }
                 }
                 if (s.enabled() && s.nextRunAt() != null && !Instant.parse(s.nextRunAt()).isAfter(now)) due.add(s);
             }
