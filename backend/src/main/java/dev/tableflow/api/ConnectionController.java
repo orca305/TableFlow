@@ -79,13 +79,17 @@ public class ConnectionController {
         @NotNull @Valid Credentials target, @NotBlank @Size(max=128) String targetSchema, @NotBlank @Size(max=128) String targetTable,
         @NotEmpty @Size(max=100) java.util.List<@NotNull Mapping> mappings,
         @Min(1) @Max(1000000) int limit, boolean createTable, boolean preserveKeys, @Pattern(regexp="[0-9a-fA-F-]{36}") String requestId, boolean confirmed,
-        @Min(100) @Max(10000) Integer chunkSize, boolean copyIndexes, boolean copyDefaults, boolean copyForeignKeys, @Size(max=1000) String where) {
+        @Min(100) @Max(10000) Integer chunkSize, boolean copyIndexes, boolean copyDefaults, boolean copyForeignKeys, @Size(max=1000) String where, boolean dropEmptyOnFailure) {
+        /** 실패 시 정리 옵션이 없는 요청. */
+        public MigrateRequest(Credentials source,String sourceSchema,String sourceTable,Credentials target,String targetSchema,String targetTable,java.util.List<Mapping> mappings,int limit,boolean createTable,boolean preserveKeys,String requestId,boolean confirmed,Integer chunkSize,boolean copyIndexes,boolean copyDefaults,boolean copyForeignKeys,String where){
+            this(source,sourceSchema,sourceTable,target,targetSchema,targetTable,mappings,limit,createTable,preserveKeys,requestId,confirmed,chunkSize,copyIndexes,copyDefaults,copyForeignKeys,where,false);
+        }
         /** 재개용으로 보관하는 사본: 비밀번호를 비우고, 저장된 비밀번호가 있는 연결이면 그 ID를 남긴다. */
         MigrateRequest forStorage(dev.tableflow.connection.ConnectionStore store){
-            return new MigrateRequest(strip(source,store),sourceSchema,sourceTable,strip(target,store),targetSchema,targetTable,mappings,limit,createTable,preserveKeys,requestId,false,chunkSize,copyIndexes,copyDefaults,copyForeignKeys,where);
+            return new MigrateRequest(strip(source,store),sourceSchema,sourceTable,strip(target,store),targetSchema,targetTable,mappings,limit,createTable,preserveKeys,requestId,false,chunkSize,copyIndexes,copyDefaults,copyForeignKeys,where,dropEmptyOnFailure);
         }
         MigrateRequest withPasswords(String sourcePassword,String targetPassword){
-            return new MigrateRequest(withPassword(source,sourcePassword),sourceSchema,sourceTable,withPassword(target,targetPassword),targetSchema,targetTable,mappings,limit,createTable,preserveKeys,requestId,true,chunkSize,copyIndexes,copyDefaults,copyForeignKeys,where);
+            return new MigrateRequest(withPassword(source,sourcePassword),sourceSchema,sourceTable,withPassword(target,targetPassword),targetSchema,targetTable,mappings,limit,createTable,preserveKeys,requestId,true,chunkSize,copyIndexes,copyDefaults,copyForeignKeys,where,dropEmptyOnFailure);
         }
         static Credentials strip(Credentials c,dev.tableflow.connection.ConnectionStore store){
             String id=c.savedId()!=null?c.savedId():store.findSavedId(c);
@@ -96,9 +100,9 @@ public class ConnectionController {
         }
         /** 스케줄 실행용 사본: 새 요청 ID, 동의 완료, 이관 행 수 상한은 최대로(원본이 늘어도 막히지 않게). */
         MigrateRequest forRun(String id){
-            return new MigrateRequest(source,sourceSchema,sourceTable,target,targetSchema,targetTable,mappings,1_000_000,createTable,preserveKeys,id,true,chunkSize,copyIndexes,copyDefaults,copyForeignKeys,where);
+            return new MigrateRequest(source,sourceSchema,sourceTable,target,targetSchema,targetTable,mappings,1_000_000,createTable,preserveKeys,id,true,chunkSize,copyIndexes,copyDefaults,copyForeignKeys,where,dropEmptyOnFailure);
         }
-        dev.tableflow.load.MigrationService.Extras extras(){return new dev.tableflow.load.MigrationService.Extras(copyIndexes,copyDefaults,copyForeignKeys,where);}
+        dev.tableflow.load.MigrationService.Extras extras(){return new dev.tableflow.load.MigrationService.Extras(copyIndexes,copyDefaults,copyForeignKeys,where,dropEmptyOnFailure);}
         @Override public String toString(){return "MigrateRequest[redacted]";}
     }
     /** DB → DB Dry-run: 원본을 읽고 대상 스키마까지 검사하지만 아무것도 쓰지 않는다. */
@@ -131,22 +135,22 @@ public class ConnectionController {
     public record BatchRequest(@NotNull @Valid Credentials source, @NotBlank @Size(max=128) String sourceSchema, @NotNull @Valid Credentials target, @NotBlank @Size(max=128) String targetSchema,
         @NotEmpty @Size(max=200) java.util.List<@NotBlank @Size(max=128) String> tables, boolean preserveKeys, boolean copyIndexes, boolean copyDefaults, boolean copyForeignKeys,
         @Pattern(regexp="skip|append") String ifExists, @Min(100) @Max(10000) Integer chunkSize, @Pattern(regexp="[0-9a-fA-F-]{36}") String requestId, boolean confirmed,
-        @Size(max=200) java.util.List<dev.tableflow.load.BatchMigration.@NotNull @Valid TableOption> tableOptions) {
+        @Size(max=200) java.util.List<dev.tableflow.load.BatchMigration.@NotNull @Valid TableOption> tableOptions, boolean dropEmptyOnFailure) {
         /** 테이블별 설정이 없는 요청. */
         public BatchRequest(Credentials source,String sourceSchema,Credentials target,String targetSchema,java.util.List<String> tables,boolean preserveKeys,boolean copyIndexes,boolean copyDefaults,boolean copyForeignKeys,String ifExists,Integer chunkSize,String requestId,boolean confirmed){
-            this(source,sourceSchema,target,targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,requestId,confirmed,null);
+            this(source,sourceSchema,target,targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,requestId,confirmed,null,false);
         }
         BatchRequest forStorage(dev.tableflow.connection.ConnectionStore store){
-            return new BatchRequest(MigrateRequest.strip(source,store),sourceSchema,MigrateRequest.strip(target,store),targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,requestId,false,tableOptions);
+            return new BatchRequest(MigrateRequest.strip(source,store),sourceSchema,MigrateRequest.strip(target,store),targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,requestId,false,tableOptions,dropEmptyOnFailure);
         }
         BatchRequest withPasswords(String sourcePassword,String targetPassword){
-            return new BatchRequest(MigrateRequest.withPassword(source,sourcePassword),sourceSchema,MigrateRequest.withPassword(target,targetPassword),targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,requestId,true,tableOptions);
+            return new BatchRequest(MigrateRequest.withPassword(source,sourcePassword),sourceSchema,MigrateRequest.withPassword(target,targetPassword),targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,requestId,true,tableOptions,dropEmptyOnFailure);
         }
         /** 스케줄 실행용 사본: 새 요청 ID, 동의 완료, 이미 있는 테이블에는 추가 적재(반복 실행이 건너뛰지 않도록). */
         BatchRequest forRun(String id){
-            return new BatchRequest(source,sourceSchema,target,targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,"append",chunkSize,id,true,tableOptions);
+            return new BatchRequest(source,sourceSchema,target,targetSchema,tables,preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,"append",chunkSize,id,true,tableOptions,dropEmptyOnFailure);
         }
-        dev.tableflow.load.BatchMigration.Options options(){return new dev.tableflow.load.BatchMigration.Options(preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,tableOptions);}
+        dev.tableflow.load.BatchMigration.Options options(){return new dev.tableflow.load.BatchMigration.Options(preserveKeys,copyIndexes,copyDefaults,copyForeignKeys,ifExists,chunkSize,tableOptions,dropEmptyOnFailure);}
         @Override public String toString(){return "BatchRequest[redacted]";}
     }
     /** 일괄 이관 사전 점검: 처리 순서(부모 먼저), 테이블별 행 수·대상 이름·충돌·오류를 돌려준다. 아무것도 쓰지 않는다. */

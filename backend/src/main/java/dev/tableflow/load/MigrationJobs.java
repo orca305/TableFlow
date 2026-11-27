@@ -39,6 +39,7 @@ public class MigrationJobs {
         @Override public boolean cancelled() { return cancel; }
         @Override public synchronized boolean createdTarget(String key) { return key.equals(createdTarget); }
         @Override public synchronized void targetCreated(String key) { createdTarget = key; persist(this); }
+        @Override public synchronized void targetDropped(String key) { if (key.equals(createdTarget)) { createdTarget = null; persist(this); } }
         synchronized Status snapshot() { return new Status(id, state, totalRows, doneRows, totalChunks, doneChunks, replayedChunks, errorCode, message, startedAt, finishedAt, notes, items); }
         synchronized boolean active() { return state.equals("queued") || state.equals("running"); }
     }

@@ -78,6 +78,7 @@ test("real browser: 대상에 없는 PostgreSQL 테이블과 영수증을 Oracle
     await confirmSource(page, "TF_UI_SRC");
     const dst = await connectTarget(page);
     await dst.getByLabel("신규 테이블 이름").fill("tf_ui_new");
+    await dst.getByRole("checkbox", { name: "실패하면 새로 만든 빈 테이블 삭제" }).check(); // 성공하면 테이블은 그대로 남는다
     await dst.getByRole("button", { name: "대상 확정", exact: true }).click();
     const review = page.getByRole("region", { name: "검토" });
     // 대상 컬럼 이름 기본값: PostgreSQL 관례(소문자), 직접 수정 가능
@@ -95,7 +96,9 @@ test("real browser: 대상에 없는 PostgreSQL 테이블과 영수증을 Oracle
     const start = run.getByRole("button", { name: "이관 시작" });
     await expect(start).toBeDisabled();
     await run.getByRole("checkbox", { name: /DB INSERT에 동의/ }).check();
+    const sent = page.waitForRequest(r => r.method() === "POST" && r.url().endsWith("/connections/migrate"));
     await start.click();
+    expect((await sent).postDataJSON().dropEmptyOnFailure).toBe(true);
     await expect(page.getByText("이관 완료: 3행", { exact: true })).toBeVisible();
     expect(pg("SELECT count(*) FROM tf_ui_new;").trim()).toBe("3");
     expect(pg("SELECT string_agg(column_name||':'||data_type, ',' ORDER BY ordinal_position) FROM information_schema.columns WHERE table_name='tf_ui_new';").trim())
@@ -438,12 +441,27 @@ test("real browser: 변환 규칙 — 대문자 변환 후 합치기와 계산�
     await review.getByLabel("SALARY 규칙 1 종류").selectOption("calc");
     await review.getByLabel("SALARY 규칙 1 계산식").fill("{SALARY} * 2");
     await review.getByLabel("SALARY 규칙 1 소수 자리").fill("2");
+    // 날짜 형식 변경 뒤 다른 컬럼을 보는 조건별 값
+    await review.getByRole("button", { name: "SALARY 변환 규칙" }).click(); // 접기
+    await review.getByRole("button", { name: "HIRE_DATE 변환 규칙" }).click();
+    await review.getByRole("button", { name: "규칙 추가" }).click();
+    await review.getByLabel("HIRE_DATE 규칙 1 종류").selectOption("dateFormat");
+    await expect(run.getByRole("button", { name: "이관 시작" })).toBeDisabled();
+    await review.getByLabel("HIRE_DATE 규칙 1 바꿀 형식").fill("yyyyMMdd");
+    await review.getByRole("button", { name: "규칙 추가" }).click();
+    await review.getByLabel("HIRE_DATE 규칙 2 종류").selectOption("case");
+    await review.getByLabel("HIRE_DATE 규칙 2 조건 1 컬럼").selectOption("SALARY");
+    await review.getByLabel("HIRE_DATE 규칙 2 조건 1 종류").selectOption("ge");
+    await review.getByLabel("HIRE_DATE 규칙 2 조건 1 비교할 값").fill("4000000");
+    await review.getByLabel("HIRE_DATE 규칙 2 조건 1 넣을 값").fill("{@}-HIGH");
     await run.getByRole("button", { name: "사전 점검" }).click();
     await expect(run.getByText(/원본 3행 중 3행을 이관합니다/)).toBeVisible();
     await run.getByRole("checkbox", { name: /DB INSERT에 동의/ }).check();
     await run.getByRole("button", { name: "이관 시작" }).click();
     await expect(page.getByText("이관 완료: 3행", { exact: true })).toBeVisible();
-    await expect(run.getByRole("region", { name: "이관 결과 검증" })).toContainText("변환 규칙이 있어 값 비교에서 제외", { timeout: 30_000 });
+    await expect(run.getByRole("region", { name: "이관 결과 검증" })).toContainText("원본과 대상이 일치합니다", { timeout: 30_000 });
+    await expect(run.getByRole("region", { name: "이관 결과 검증" })).toContainText("합계 (변환 결과)");
+    expect(pg("SELECT string_agg(hire_date, ',' ORDER BY emp_no) FROM tf_ui_tf;").trim()).toBe("20260115,20260302-HIGH,20260618");
     expect(pg("SELECT emp_nm FROM tf_ui_tf WHERE emp_no='001';").trim()).toBe("001:KIM O'BRIEN");
     expect(pg("SELECT emp_nm FROM tf_ui_tf WHERE emp_no='002';").trim()).toBe("002:LEE");
     expect(pg("SELECT salary = 7000001.00 FROM tf_ui_tf WHERE emp_no='001';").trim()).toBe("t");

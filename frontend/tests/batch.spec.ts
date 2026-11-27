@@ -46,7 +46,10 @@ test("real browser: 일괄 이관 — 부모 테이블 먼저 순서대로 생�
   await dst.getByLabel("일괄 대상 스키마", { exact: true }).selectOption("public");
 
   const run = page.getByRole("region", { name: "일괄 이관 실행" });
+  await page.getByRole("checkbox", { name: "실패하면 새로 만든 빈 테이블 삭제" }).check();
+  const checked = page.waitForRequest(r => r.method() === "POST" && r.url().endsWith("/connections/migrate/batch/check"));
   await run.getByRole("button", { name: "사전 점검" }).click();
+  expect((await checked).postDataJSON().dropEmptyOnFailure).toBe(true);
   const rows = run.getByRole("table", { name: "일괄 이관 점검 결과" }).locator("tbody tr");
   await expect(rows).toHaveCount(3);
   await expect(rows.last()).toContainText("TF_UB_C"); // 자식은 마지막

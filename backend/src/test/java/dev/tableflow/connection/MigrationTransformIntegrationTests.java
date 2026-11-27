@@ -82,11 +82,18 @@ class MigrationTransformIntegrationTests {
             assertEquals("AB12",got.get(1).code()); assertEquals("CD34",got.get(2).code()); assertNull(got.get(3).code());
             assertEquals(0,new BigDecimal("31.50").compareTo(got.get(1).total())); assertEquals(0,new BigDecimal("10.00").compareTo(got.get(2).total())); assertNull(got.get(3).total());
 
-            // 이관 후 검증: 변환 컬럼은 비교에서 제외되고 행 수·변환하지 않은 컬럼은 일치
+            // 이관 후 검증: 변환 컬럼은 원본에 규칙을 다시 적용한 결과와 대상을 비교한다
             var ok=verifier.verify(src,ss,"TF_T_SRC",tgt,ts,"TF_T_DST",map,null);
             assertTrue(ok.allMatch(),ok.checks().toString()+ok.notes()); assertEquals(3,ok.sourceRows());
-            assertTrue(ok.notes().stream().anyMatch(n->n.contains("변환 규칙")));
-            assertTrue(ok.checks().stream().allMatch(c->c.source().equals("ID")));
+            assertTrue(ok.checks().stream().anyMatch(c->c.target().equals("TOTAL")&&c.measure().startsWith("합계")),ok.checks().toString());
+            assertTrue(ok.checks().stream().anyMatch(c->c.target().equals("CODE2")&&c.measure().startsWith("문자열 길이")),ok.checks().toString());
+            exec(t,"UPDATE "+q(to,"TF_T_DST")+" SET "+q(to,"TOTAL")+"=999,"+q(to,"CODE2")+"='AB' WHERE "+q(to,"ID")+"=1");
+            var changed=verifier.verify(src,ss,"TF_T_SRC",tgt,ts,"TF_T_DST",map,null);
+            assertFalse(changed.allMatch()); assertTrue(changed.rowsMatch());
+            assertEquals(Set.of("TOTAL","CODE2"),changed.checks().stream().filter(c->!c.match()).map(c->c.target()).collect(java.util.stream.Collectors.toSet()),changed.checks().toString());
+            // 행 조건은 변환 결과 계산에도 적용된다
+            var filtered=verifier.verify(src,ss,"TF_T_SRC",tgt,ts,"TF_T_DST",map,q(from,"ID")+" > 1");
+            assertFalse(filtered.rowsMatch());
 
             // 기존 테이블: 같은 규칙을 대상 컬럼 타입에 맞춰 적재
             exec(t,"DELETE FROM "+q(to,"TF_T_DST"));
@@ -109,6 +116,67 @@ class MigrationTransformIntegrationTests {
             for(String n:List.of("TF_T_DST","tableflow_load_receipts")) dropQuiet(t,q(to,n));
             dropQuiet(s,q(from,"TF_T_SRC"));
         }
+    }
+    @ParameterizedTest(name="{0} -> {1}")
+    @CsvSource({"oracle,postgresql","postgresql,oracle","mysql,mariadb","mariadb,postgresql"})
+    void appliesDateRegexAndConditionRulesAndVerifiesTheResult(Dbms from,Dbms to)throws Exception {
+        var enabled=Arrays.asList(System.getenv().getOrDefault("TABLEFLOW_TEST_JDBC_DBMS","postgresql,mysql,mariadb").split(","));
+        Assumptions.assumeTrue(enabled.contains(from.name()) && enabled.contains(to.name()));
+        var src=credentials(from); var tgt=credentials(to); String ss=schema(from), ts=schema(to);
+        try(var s=DriverManager.getConnection(explorer.url(src),explorer.properties(src));var t=DriverManager.getConnection(explorer.url(tgt),explorer.properties(tgt))) {
+            for(String n:List.of("TF_N_DST","tableflow_load_receipts")) dropQuiet(t,q(to,n));
+            dropQuiet(s,q(from,"TF_N_SRC"));
+            try {
+                exec(s,"CREATE TABLE "+q(from,"TF_N_SRC")+" ("+q(from,"ID")+" INTEGER PRIMARY KEY,"+q(from,"HIRED")+" DATE,"+q(from,"YMD")+" "+text(from)+"(8),"
+                    +q(from,"PHONE")+" "+text(from)+"(20),"+q(from,"AMT")+" "+dec(from)+"(10,2),"+q(from,"JOINED")+" DATE)"+((from==Dbms.mysql||from==Dbms.mariadb)?" ENGINE=InnoDB":""));
+                // 분할 읽기(5,000행)를 넘겨 검증이 여러 번 나눠 읽는 경로도 지난다
+                s.setAutoCommit(false);
+                try(var st=s.prepareStatement("INSERT INTO "+q(from,"TF_N_SRC")+" VALUES (?,?,?,?,?,?)")) {
+                    for(int i=1;i<=5200;i++) {
+                        boolean empty=i%1000==0; var day=java.time.LocalDate.of(2020,1,1).plusDays(i%1500);
+                        st.setInt(1,i); st.setDate(2,empty?null:java.sql.Date.valueOf(day)); st.setString(3,empty?null:day.toString().replace("-",""));
+                        st.setString(4,empty?null:"010"+String.format("%08d",i)); st.setBigDecimal(5,empty?null:BigDecimal.valueOf(i%300).setScale(2)); st.setDate(6,empty?null:java.sql.Date.valueOf(day)); st.addBatch();
+                    }
+                    st.executeBatch();
+                }
+                s.commit(); s.setAutoCommit(true);
+                var map=List.of(new Mapping("ID","ID"),new Mapping("JOINED","JOINED"),
+                    new Mapping("HIRED","HIRED_TXT",null,null,null,List.of(new Step("dateFormat",null,"yyyy/MM/dd",null,null,null,null,null,null,null,null))),
+                    new Mapping("YMD","YMD_DATE",dev.tableflow.model.Table.DataType.date,null,null,List.of(new Step("dateFormat","yyyyMMdd","yyyy-MM-dd",null,null,null,null,null,null,null,null))),
+                    new Mapping("PHONE","PHONE_FMT",null,null,null,List.of(new Step("regexReplace","(\\d{3})(\\d{4})(\\d{4})","$1-$2-$3",null,null,null,null,null,null,null,null))),
+                    new Mapping("AMT","GRADE",null,null,null,List.of(new Step("case",null,null,"C",null,null,null,null,null,null,null,
+                        List.of(new dev.tableflow.load.ValueTransform.Case(null,"ge","200","최우수"),new dev.tableflow.load.ValueTransform.Case(null,"ge","100","B+"))))));
+                // 첫 분할 뒤 중지하고 같은 요청으로 재개: 이 작업이 만든 테이블에서도 완료 분할은 건너뛰고 끝까지 적재한다
+                var id=UUID.randomUUID().toString(); var progress=new Resumable(); progress.stop=true;
+                assertThrows(RuntimeException.class,()->migration.runBulk(src,ss,"TF_N_SRC",tgt,ts,"TF_N_DST",map,100000,true,false,id,progress,2000,MigrationService.Extras.NONE));
+                progress.stop=false; progress.done=0;
+                var resumed=migration.runBulk(src,ss,"TF_N_SRC",tgt,ts,"TF_N_DST",map,100000,true,false,id,progress,2000,MigrationService.Extras.NONE);
+                assertEquals(5200,resumed.insertedRows()); assertEquals(1,resumed.replayedChunks());
+                String row="SELECT "+q(to,"HIRED_TXT")+","+q(to,"YMD_DATE")+","+q(to,"PHONE_FMT")+","+q(to,"GRADE")+" FROM "+q(to,"TF_N_DST")+" WHERE "+q(to,"ID")+"=";
+                try(var st=t.createStatement()) {
+                    try(var rs=st.executeQuery(row+"250")){rs.next();assertEquals("2020/09/07",rs.getString(1));assertEquals(java.sql.Date.valueOf("2020-09-07"),rs.getDate(2));assertEquals("010-0000-0250",rs.getString(3));assertEquals("최우수",rs.getString(4));}
+                    try(var rs=st.executeQuery(row+"1000")){rs.next();assertNull(rs.getString(1));assertNull(rs.getDate(2));assertNull(rs.getString(3));assertEquals("C",rs.getString(4));}
+                }
+                var ok=verifier.verify(src,ss,"TF_N_SRC",tgt,ts,"TF_N_DST",map,null);
+                assertTrue(ok.allMatch(),ok.checks().toString()+ok.notes()); assertEquals(5200,ok.targetRows());
+                for(String column:List.of("HIRED_TXT","YMD_DATE","PHONE_FMT","GRADE")) assertTrue(ok.checks().stream().anyMatch(c->c.target().equals(column)),column);
+                exec(t,"UPDATE "+q(to,"TF_N_DST")+" SET "+q(to,"YMD_DATE")+"=DATE '1999-01-01' WHERE "+q(to,"ID")+"=5100");
+                var bad=verifier.verify(src,ss,"TF_N_SRC",tgt,ts,"TF_N_DST",map,null);
+                assertEquals(List.of("YMD_DATE"),bad.checks().stream().filter(c->!c.match()).map(c->c.target()).distinct().toList(),bad.checks().toString());
+            } finally {
+                for(String n:List.of("TF_N_DST","tableflow_load_receipts")) dropQuiet(t,q(to,n));
+                dropQuiet(s,q(from,"TF_N_SRC"));
+            }
+        }
+    }
+    /** 작업 목록처럼 "이 작업이 만든 테이블"을 기억하고, stop이면 첫 분할 뒤 중지한다. */
+    static class Resumable implements MigrationService.Progress {
+        boolean stop; int done; String created;
+        public boolean cancelled(){return stop&&done>=1;}
+        public void total(int chunks,long rows){}
+        public void chunk(int c,long rows,int replayed){done=c;}
+        public boolean createdTarget(String key){return key.equals(created);}
+        public void targetCreated(String key){created=key;}
     }
     static class NoProgress implements MigrationService.Progress {
         public boolean cancelled(){return false;}

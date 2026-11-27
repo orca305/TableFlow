@@ -30,7 +30,7 @@ export default function BatchPage({ server, saved, reloadSaved, onHistoryChanged
   const [schemas, setSchemas] = useState<string[]>([]); const [schema, setSchema] = useState("");
   const [tables, setTables] = useState<string[]>([]); const [picked, setPicked] = useState<Set<string>>(new Set()); const [filter, setFilter] = useState("");
   const [dstSchemas, setDstSchemas] = useState<string[]>([]); const [dstSchema, setDstSchema] = useState("");
-  const [keys, setKeys] = useState(false); const [idx, setIdx] = useState(false); const [defs, setDefs] = useState(false); const [fks, setFks] = useState(true);
+  const [keys, setKeys] = useState(false); const [idx, setIdx] = useState(false); const [defs, setDefs] = useState(false); const [fks, setFks] = useState(true); const [dropEmpty, setDropEmpty] = useState(false);
   const [ifExists, setIfExists] = useState<"skip" | "append">("skip"); const [chunkText, setChunkText] = useState("");
   const [plan, setPlan] = useState<Plan | null>(null); const [confirmed, setConfirmed] = useState(false); const [requestId, setRequestId] = useState("");
   const [job, setJob] = useState<Job | null>(null);
@@ -45,7 +45,7 @@ export default function BatchPage({ server, saved, reloadSaved, onHistoryChanged
   const dbms = dstV?.connection.dbms;
   const problem = dbms ? settingProblem(settings, selected, dbms) : "";
   const body = () => ({ source: srcV!.connection, sourceSchema: schema, target: dstV!.connection, targetSchema: dstSchema, tables: selected, preserveKeys: keys && supportsIdentity, copyIndexes: idx, copyDefaults: defs,
-    copyForeignKeys: fks, ifExists, chunkSize: chunkText === "" ? undefined : chunk, tableOptions: tableOptionsOf(settings, selected, dstV!.connection.dbms) });
+    copyForeignKeys: fks, dropEmptyOnFailure: dropEmpty, ifExists, chunkSize: chunkText === "" ? undefined : chunk, tableOptions: tableOptionsOf(settings, selected, dstV!.connection.dbms) });
   function reset() { setPlan(null); setConfirmed(false); setRequestId(""); setJob(null); setVerify(null); setError(""); }
   async function guarded(action: () => Promise<void>) {
     setBusy(true); setError("");
@@ -135,6 +135,7 @@ export default function BatchPage({ server, saved, reloadSaved, onHistoryChanged
             <span className="check"><input id="b-idx" type="checkbox" checked={idx} disabled={working} onChange={e => { setIdx(e.target.checked); reset(); }} /><label htmlFor="b-idx">인덱스 복제</label></span>
             <span className="check"><input id="b-def" type="checkbox" checked={defs} disabled={working} onChange={e => { setDefs(e.target.checked); reset(); }} /><label htmlFor="b-def">기본값 복제</label></span>
             <span className="check"><input id="b-fk" type="checkbox" checked={fks} disabled={working} onChange={e => { setFks(e.target.checked); reset(); }} /><label htmlFor="b-fk">외래 키(FK) 복제</label></span></div>
+          <div className="ol"><input id="b-drop-empty" type="checkbox" checked={dropEmpty} disabled={working} onChange={e => { setDropEmpty(e.target.checked); reset(); }} /><label htmlFor="b-drop-empty">실패하면 새로 만든 빈 테이블 삭제</label><Help text="적재에 실패했을 때, 이번 실행에서 새로 만든 대상 테이블이 비어 있으면 삭제합니다. 원래 있던 테이블과 데이터가 들어간 테이블은 삭제하지 않으며, 중지한 경우에도 삭제하지 않습니다." /></div>
           <div className="row end">
             <fieldset className="radios" style={{ border: 0, padding: 0, margin: 0 }}><legend className="mut">대상에 같은 이름의 테이블이 있으면</legend>
               <div className="row"><span className="ol"><input type="radio" name="b-exists" id="b-skip" checked={ifExists === "skip"} disabled={working} onChange={() => { setIfExists("skip"); reset(); }} /><label htmlFor="b-skip">건너뜀</label></span>

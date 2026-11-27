@@ -56,7 +56,7 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
   const [rules, setRules] = useState<Record<string, TransformStep[]>>({}); const [openRule, setOpenRule] = useState("");
   const [srcTables, setSrcTables] = useState<string[]>([]); const [srcSchemaSel, setSrcSchemaSel] = useState("");
   const [force, setForce] = useState<{ name: string; n: number } | null>(null); const [orderPlan, setOrderPlan] = useState<OrderPlan | null>(null);
-  const [copyIdx, setCopyIdx] = useState(false); const [copyDef, setCopyDef] = useState(false); const [copyFk, setCopyFk] = useState(false);
+  const [copyIdx, setCopyIdx] = useState(false); const [copyDef, setCopyDef] = useState(false); const [copyFk, setCopyFk] = useState(false); const [dropEmpty, setDropEmpty] = useState(false);
   const [analysis, setAnalysis] = useState<Analysis | null>(null); const [analysisError, setAnalysisError] = useState("");
   const [preview, setPreview] = useState<Table | null>(null); const [previewError, setPreviewError] = useState("");
   const [pPage, setPPage] = useState(0); const [pSize, setPSize] = useState(10);
@@ -93,7 +93,7 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
 
   const body = () => ({ source: srcV!.connection, sourceSchema: src!.schema, sourceTable: src!.table, target: dstV!.connection, targetSchema: mode === "new" ? dstSchema : dst!.schema,
     targetTable, mappings, limit: Math.max(1, total), createTable: mode === "new", preserveKeys: effectiveKeys,
-    copyIndexes: mode === "new" && copyIdx, copyDefaults: mode === "new" && copyDef, copyForeignKeys: mode === "new" && copyFk, chunkSize: bulk && chunkValid ? chunk : undefined, where: filtered ? where.trim() : undefined });
+    copyIndexes: mode === "new" && copyIdx, copyDefaults: mode === "new" && copyDef, copyForeignKeys: mode === "new" && copyFk, dropEmptyOnFailure: mode === "new" && dropEmpty, chunkSize: bulk && chunkValid ? chunk : undefined, where: filtered ? where.trim() : undefined });
   function resetRun() { setVerify(null); setVerifyError(""); setPlan(null); setConfirmed(false); setRequestId(""); setDone(null); setJob(null); setError(""); setNotice(""); }
   async function run(action: () => Promise<void>) {
     setBusy(true); setError(""); setNotice("");
@@ -146,7 +146,7 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
     }, 350);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dstOk, mappings, preserveKeys, supportsIdentity, mode, targetTable, copyIdx, copyDef, copyFk]);
+  }, [dstOk, mappings, preserveKeys, supportsIdentity, mode, targetTable, copyIdx, copyDef, copyFk, dropEmpty]);
   useEffect(() => { // 원본 데이터 미리보기(샘플 200행)
     if (!srcOk || !src || !srcV) return;
     const columns = src.columns.filter(c => !UNSUPPORTED.has(c.jdbcType ?? 12)).map(c => c.name);
@@ -228,7 +228,7 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
             {orderPlan && <div className="grid" role="status" aria-label="이관 순서">
               {[...new Set(orderPlan.order.map(i => i.level))].map(level => <div key={level} className="row"><b>{level + 1}단계{level === 0 ? " (부모 없음)" : ""}</b>
                 {orderPlan.order.filter(i => i.level === level).map(i => <button type="button" key={i.table} className="btn sm" data-tip={i.parents.length ? `먼저 이관: ${i.parents.join(", ")}` : i.externalParents.length ? `선택하지 않은 부모: ${i.externalParents.join(", ")}` : "부모 테이블 없음"} onClick={() => setForce({ name: i.table, n: Date.now() })}>{i.table}</button>)}</div>)}
-              {orderPlan.cycles.length > 0 && <div className="alert warning">서로 참조해 순서를 정할 수 없는 테이블: {orderPlan.cycles.join(", ")}. FK를 복제하지 않고 이관한 뒤 DB에서 FK를 추가하세요.</div>}
+              {orderPlan.cycles.length > 0 && <div className="alert warning">서로 참조해 순서를 정할 수 없는 테이블: {orderPlan.cycles.join(", ")}. 일괄 이관에서 함께 선택하고 'FK 복제'를 켜면 모두 적재한 뒤 외래 키를 추가합니다.</div>}
             </div>}</div></details>}
         {src && <div className="chips"><span className="chip">{srcRows != null ? `총 ${fmt(srcRows)}행` : "행 수 확인 중"}</span><span className="chip">{src.columns.length}개 컬럼</span>{src.columns.some(c => UNSUPPORTED.has(c.jdbcType ?? 12)) && <span className="pill warn">이진 등 이관할 수 없는 컬럼은 자동으로 제외됩니다</span>}</div>}
         {src && <div className="split"><div className="sp-h">이관할 행 조건<Help text="원본에서 조건에 맞는 행만 이관합니다. WHERE 없이 조건식만 입력하세요. 예: STATUS = 'A' AND AMT > 100. 비워 두면 전체 행을 이관합니다. 컬럼 이름의 대소문자는 원본 DB 기준이며, PostgreSQL에서 대문자 컬럼은 큰따옴표로 감싸세요. 이관할 컬럼은 컬럼 매핑에서 대상 컬럼을 비워 제외합니다." /></div>
@@ -254,11 +254,12 @@ export default function MigratePage({ server, saved, reloadSaved, onHistoryChang
           {!supportsIdentity && <p className="mut" style={{ gridColumn: "1 / -1" }}>이 대상 DB는 기존 자동 증가 컬럼의 원본 값 지정을 지원하지 않습니다. 신규 일반 컬럼에는 원본 키 값을 이관할 수 있습니다.</p>}
           <div className="ol span"><input type="checkbox" id="keep-keys" checked={effectiveKeys} disabled={working || !supportsIdentity} onChange={e => { setPreserveKeys(e.target.checked); setDstOk(false); }} /><label htmlFor="keep-keys">원본 기본 키(PK) 유지</label><Help text="기본 키는 행을 구분하는 고유 번호입니다. 선택하면 자동 증가 대상 컬럼에도 원본 값을 그대로 넣고, 적재 후 시퀀스를 최댓값 다음으로 맞춥니다." /></div>
         </div>
-        {mode === "new" && <div className="split"><div className="sp-h">함께 복제할 항목<Help text="신규 테이블을 만들 때 원본의 구조를 함께 가져옵니다. 기본값은 숫자·문자·불리언·현재 시각만 옮기고, 시퀀스·함수는 복제하지 않습니다. FK는 부모 테이블이 대상에 이미 있어야 만들 수 있습니다." /></div>
+        {mode === "new" && <div className="split"><div className="sp-h">함께 복제할 항목<Help text="신규 테이블을 만들 때 원본의 구조를 함께 가져옵니다. 기본값은 숫자·문자·날짜 고정값, 불리언, 현재 시각·오늘 날짜만 옮기고, 시퀀스와 그 밖의 함수는 복제하지 않습니다. FK는 부모 테이블이 대상에 이미 있어야 만들 수 있습니다." /></div>
           <div className="row">
             <span className="check"><input id="copy-idx" type="checkbox" checked={copyIdx} disabled={working} onChange={e => { setCopyIdx(e.target.checked); setDstOk(false); }} /><label htmlFor="copy-idx">인덱스 복제</label></span>
             <span className="check"><input id="copy-def" type="checkbox" checked={copyDef} disabled={working} onChange={e => { setCopyDef(e.target.checked); setDstOk(false); }} /><label htmlFor="copy-def">기본값 복제</label></span>
-            <span className="check"><input id="copy-fk" type="checkbox" checked={copyFk} disabled={working} onChange={e => { setCopyFk(e.target.checked); setDstOk(false); }} /><label htmlFor="copy-fk">외래 키(FK) 복제</label></span></div></div>}
+            <span className="check"><input id="copy-fk" type="checkbox" checked={copyFk} disabled={working} onChange={e => { setCopyFk(e.target.checked); setDstOk(false); }} /><label htmlFor="copy-fk">외래 키(FK) 복제</label></span></div>
+          <div className="ol"><input id="drop-empty" type="checkbox" checked={dropEmpty} disabled={working} onChange={e => { setDropEmpty(e.target.checked); setDstOk(false); }} /><label htmlFor="drop-empty">실패하면 새로 만든 빈 테이블 삭제</label><Help text="적재에 실패했을 때, 이번 실행에서 새로 만든 대상 테이블이 비어 있으면 삭제합니다. 원래 있던 테이블과 데이터가 들어간 테이블은 삭제하지 않으며, 중지한 경우에도 삭제하지 않습니다." /></div></div>}
         <div className="split">
           <div className="sp-h">분할 이관<Help text="대용량 데이터를 나누어 이관하는 설정입니다. 분할 단위마다 따로 저장되므로 중단되어도 이어서 진행할 수 있습니다. 기본값은 설정 메뉴의 분할 이관 단위입니다." /></div>
           <div className="row end"><label className="f" style={{ width: 200 }}>분할 단위(행)<input aria-label="분할 단위(행)" inputMode="numeric" value={chunkText} disabled={working} onChange={e => { setChunkText(e.target.value); setDstOk(false); }} /></label>

@@ -55,8 +55,8 @@ public final class TableDdl {
         if (!TableEngine.identifier(id) || id.length() > (db == Dbms.postgresql ? 63 : 64)) throw new IllegalArgumentException("이름이 올바르지 않습니다: " + id);
     }
     /**
-     * 원본 기본값(원문)을 대상 DBMS의 DEFAULT 식으로 바꾼다. 숫자·문자 리터럴·불리언·현재 시각만 안전하게 옮기고,
-     * 시퀀스·함수·표현식은 null(복제 안 함)을 돌려준다.
+     * 원본 기본값(원문)을 대상 DBMS의 DEFAULT 식으로 바꾼다. 숫자·문자·날짜 리터럴, 불리언, 현재 시각·오늘 날짜만 안전하게 옮기고,
+     * 시퀀스·그 밖의 함수·표현식은 null(복제 안 함)을 돌려준다.
      */
     public static String convertDefault(Dbms from, Dbms to, DataType type, String raw) {
         if (raw == null) return null;
@@ -69,21 +69,57 @@ public final class TableDdl {
         v = v.replaceAll("(::[A-Za-z_ ]+(\\([0-9, ]*\\))?(\\[\\])?)+$", "").strip();
         if (v.isEmpty() || v.equalsIgnoreCase("null")) return null;
         String lower = v.toLowerCase(Locale.ROOT);
-        if (lower.matches("current_timestamp(\\(\\d*\\))?|now\\(\\)|sysdate|systimestamp|localtimestamp(\\(\\d*\\))?|current_date")) {
+        // 오늘 날짜(시각 없음). Oracle·Tibero의 CURRENT_DATE는 시각까지 담으므로 원본이 Oracle 계열이면 현재 시각으로 본다.
+        boolean today = lower.matches("curdate\\(\\)|current_date\\(\\)|trunc\\s*\\(\\s*(sysdate|current_date|systimestamp)\\s*\\)")
+            || (lower.equals("current_date") && !dev.tableflow.connection.SqlDialect.oracleTypes(from));
+        if (today) return type == DataType.date || type == DataType.datetime ? today(to, type) : null;
+        if (lower.matches("current_timestamp(\\(\\d*\\))?|now\\(\\d*\\)|sysdate|systimestamp|localtimestamp(\\(\\d*\\))?|current_date|getdate\\(\\)|sysdatetime\\(\\)")) {
             if (type == DataType.datetime) return to == Dbms.mysql || to == Dbms.mariadb ? "CURRENT_TIMESTAMP(6)" : "CURRENT_TIMESTAMP";
-            if (type == DataType.date && to == Dbms.sqlserver) return "CAST(CURRENT_TIMESTAMP AS DATE)";
-            if (type == DataType.date) return to == Dbms.mysql || to == Dbms.mariadb ? null : "CURRENT_DATE";
-            return null;
+            return type == DataType.date ? today(to, type) : null;
         }
+        if (type == DataType.date || type == DataType.datetime) {
+            String literal = dateLiteral(v);
+            if (literal != null) {
+                if (type == DataType.date && literal.length() > 10) { if (!literal.substring(10).matches("[ T]00:00(:00(\\.0+)?)?")) return null; literal = literal.substring(0, 10); }
+                // Oracle·Tibero는 문자열 기본값을 세션 날짜 형식으로 해석하므로 형식이 고정된 날짜 리터럴로 쓴다.
+                if (dev.tableflow.connection.SqlDialect.oracleTypes(to))
+                    return type == DataType.date ? "DATE '" + literal + "'" : "TIMESTAMP '" + (literal.length() == 10 ? literal + " 00:00:00" : literal.replace('T', ' ')) + "'";
+                return "'" + literal + "'";
+            }
+            if (dev.tableflow.connection.SqlDialect.oracleTypes(to)) return null;
+        }
+        if (type == DataType.bool && (lower.equals("b'0'") || lower.equals("b'1'"))) lower = lower.substring(2, 3);
         if (type == DataType.bool && (lower.equals("true") || lower.equals("false") || lower.equals("0") || lower.equals("1") || lower.equals("'t'") || lower.equals("'f'"))) {
             boolean on = lower.equals("true") || lower.equals("1") || lower.equals("'t'");
             return dev.tableflow.connection.SqlDialect.oracleTypes(to) || to == Dbms.sqlserver || to == Dbms.cubrid ? (on ? "1" : "0") : (on ? "TRUE" : "FALSE");
         }
+        // PostgreSQL은 음수 기본값을 '-1'::integer처럼 따옴표로 돌려준다.
+        if ((type == DataType.integer || type == DataType.decimal) && v.matches("'-?(\\d+(\\.\\d+)?|\\.\\d+)'")) v = v.substring(1, v.length() - 1);
+        if ((type == DataType.integer || type == DataType.decimal) && v.matches("-?\\.\\d+")) return v.replace(".", "0.");
         if (v.matches("-?\\d+(\\.\\d+)?")) return type == DataType.string ? "'" + v + "'" : (type == DataType.integer || type == DataType.decimal) ? v : null;
         if (from == Dbms.sqlserver && v.matches("N'([^']|'')*'")) v = v.substring(1);
         if (to == Dbms.sqlserver && type == DataType.string && v.matches("'([^']|'')*'")) return "N" + v;
         if (v.matches("'([^']|'')*'")) return type == DataType.string || type == DataType.date || type == DataType.datetime ? v.replace("\\", to == Dbms.mysql || to == Dbms.mariadb ? "\\\\" : "\\") : null;
         return null;
+    }
+
+    private static String today(Dbms to, DataType type) {
+        return switch (to) {
+            case oracle, tibero -> "TRUNC(CURRENT_DATE)";
+            case mysql, mariadb -> "(CURRENT_DATE)";
+            case sqlserver -> type == DataType.date ? "CAST(CURRENT_TIMESTAMP AS DATE)" : "CAST(CAST(CURRENT_TIMESTAMP AS DATE) AS DATETIME2)";
+            case cubrid -> type == DataType.date ? "CURRENT_DATE" : null;
+            case postgresql -> "CURRENT_DATE";
+        };
+    }
+    /** ISO 날짜·일시 리터럴('…', DATE '…', TIMESTAMP '…', TO_DATE('…','YYYY-MM-DD'))의 따옴표 안 값. 그 밖의 형식이면 null. */
+    private static String dateLiteral(String v) {
+        var m = java.util.regex.Pattern.compile("(?i)(?:(?:date|timestamp)\\s*)?'(\\d{4}-\\d{2}-\\d{2}(?:[ T]\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d{1,9})?)?)?)'"
+            + "|to_(?:date|timestamp)\\s*\\(\\s*'(\\d{4}-\\d{2}-\\d{2}(?: \\d{2}:\\d{2}:\\d{2})?)'\\s*,\\s*'yyyy-mm-dd(?: hh24:mi:ss)?'\\s*\\)").matcher(v);
+        if (!m.matches()) return null;
+        String literal = m.group(1) != null ? m.group(1) : m.group(2);
+        try { java.time.LocalDate.parse(literal.substring(0, 10)); } catch (java.time.DateTimeException e) { return null; }
+        return literal;
     }
 
     /** 적재 영수증 테이블(infra/jdbc/*-receipts.sql과 동일 구조). */

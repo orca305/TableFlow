@@ -218,3 +218,27 @@ npx playwright test tests/migration.spec.ts tests/db-to-file.spec.ts    # 기대
 - **수정**: `MigrationService.Progress.targetCreated/createdTarget`. CREATE TABLE 성공 직후 대상 식별값(DBMS·호스트·포트·DB·스키마·테이블)을 `JobStore.Stored.createdTarget`에 저장하고, 끝나지 않은 같은 작업을 재개할 때만 `completeStructure`를 부른다. 일괄 이관도 같은 경로를 쓰며 `Item.created`는 이제 CREATE가 실제로 성공했을 때만 true다(생성에 실패한 뒤 사용자가 직접 만든 테이블은 바꾸지 않는다).
 - 한계: 10,000행 이하 즉시 실행(`/migrate`)은 작업 기록이 없어 보완하지 않는다. CREATE 성공과 기록 저장 사이에 서버가 꺼지면 보완 대상에서 빠진다. 이 수정 전에 실패한 단건 작업에는 기록이 없어 기존 동작을 따른다. DB가 거부해 만들 수 없는 인덱스·FK(데이터 중복, 타입 불일치 등)가 있으면 원인을 해결할 때까지 재개가 실패한다.
 - 검증: 백엔드 전체(6종 DB 실서버 설정) 185개 중 실패 0, 건너뜀 6(성능 측정 1, Tibero 1, 로컬 MySQL 4). 신규 통합 테스트는 Oracle→PostgreSQL, PostgreSQL→Oracle, MySQL→MariaDB, MariaDB→MySQL 4조합 통과(SQL Server·CUBRID의 보완은 별도 검증하지 않음). Playwright 42개 중 38 통과, 4 건너뜀, 실패 0.
+
+## 18. 2026-11-27 값 변환 확장, 변환 컬럼 검증, Oracle DATE 재개 수정
+
+- **새 규칙**(`ValueTransform`): `dateFormat`, `regexReplace`, `regexExtract`, `case`. 날짜 형식은 허용 문자만 받고 엄격하게 해석한다(`YYYY`·`DD`도 연·일). 정규식은 문자 접근 횟수 상한으로 역추적 폭증을 끊는다. `Step`에 `cases` 필드를 더했다(기존 JSON 그대로 유효). 화면은 `TransformEditor`에 입력 추가.
+- **변환 컬럼 검증**: `MigrationVerifier`가 원본을 5,000행씩 다시 읽어(`PK` 있으면 키 기반) 규칙 → 적재 때의 정규화(`TableEngine.normalize`)를 거친 집계를 만들고 대상 DB 집계와 비교한다. 일괄 이관 검증에도 적용된다. 서버 행 한도 초과 시 생략, CHAR 대상은 길이 비교 생략. 동기 요청이며 큰 테이블의 소요 시간은 재지 않았다.
+- **날짜 → 일시**: 변환 결과가 날짜뿐이고 대상이 일시(Oracle DATE는 JDBC상 TIMESTAMP)면 00:00:00을 붙인다(`MigrationService.fit`).
+- **버그 수정(테스트로 재현)**: 이 작업이 만든 Oracle 테이블에 날짜 변환 결과를 적재하다 중단하면, 재개 때 컬럼 타입을 기존 테이블 기준(일시)으로 다시 계산해 분할 1에서 검증 오류로 실패했다. 재개(`createdTarget`)에서는 생성 당시와 같은 타입으로 계산하고 기존 테이블의 DDL은 내지 않는다. 일괄 이관도 같은 경로다. 이 정보가 없는 경우(10,000행 이하 즉시 실행의 재시도, 사용자가 만든 테이블)는 기존 계산을 따른다.
+- 검증: 백엔드 전체(6종 DB 실서버 설정) 194개 중 실패 0, 건너뜀 6(성능 측정 1, Tibero 1, 로컬 MySQL 4). 새 규칙·검증·재개 통합 테스트는 Oracle→PostgreSQL, PostgreSQL→Oracle, MySQL→MariaDB, MariaDB→PostgreSQL 4조합(5,200행) 통과. SQL Server·CUBRID에서는 새 규칙의 검증·재개를 따로 확인하지 않았다. Playwright 전체 42개 중 38 통과, 4 건너뜀, 실패 0. 그 뒤 괄호 번호 입력 폭만 고치고 타입 검사·빌드·`변환 규칙` 시나리오를 다시 통과했다.
+
+## 19. 2026-11-27 순환·자기 참조 FK의 적재 후 생성, 기본값 복제 확대
+
+- **자기 참조 FK**: 이전에는 복제하지 않았다. 이제 이번 작업이 만든 테이블에 한해 모든 행 적재 후 `fks_<테이블>_n`으로 만든다(즉시 실행·분할·일괄·재개). 같은 이름의 다른 스키마 테이블 참조는 계속 복제하지 않는다. 사전 점검의 DDL 미리보기에 해당 ALTER 문이 포함된다.
+- **순환 참조**: 일괄 이관이 `cycles` 테이블을 모두 적재한 뒤, 작업이 만든 테이블에 빠진 FK를 `MigrationService.addForeignKeysAfterLoad`로 추가한다. 건너뛴 테이블·추가 적재한 기존 테이블은 바꾸지 않는다. 단건 이관을 테이블별로 하는 경우의 순환은 자동 처리하지 않는다.
+- **실패 처리**: 적재 후 FK를 DB가 거부해도 작업은 성공하고 안내를 남긴다(이전에도 이런 FK는 만들지 않고 성공했다). 성공한 작업은 재개할 수 없으므로 데이터를 고친 뒤 DB에서 직접 추가해야 한다.
+- **기본값**(`TableDdl.convertDefault`): 따옴표 음수(`'-1'::integer`), `.5` 형태, `b'1'`, 오늘 날짜(`CURRENT_DATE`·`curdate()`·`TRUNC(SYSDATE)`), `getdate()`·`sysdatetime()`, ISO 날짜·일시 리터럴을 추가했다. Oracle·Tibero 대상 날짜 기본값은 `DATE '…'`/`TIMESTAMP '…'`로 쓰고 형식이 다른 문자열은 복제하지 않는다. Oracle 원본의 `CURRENT_DATE`는 시각을 포함하므로 현재 시각으로 옮긴다. PostgreSQL 등의 `CURRENT_DATE`를 일시 컬럼에 옮길 때 이전에는 현재 시각이 되었으나 이제 오늘 0시다.
+- 검증: 백엔드 전체(6종 DB 실서버 설정) 207개 중 실패 0, 건너뜀 6(성능 측정 1, Tibero 1, 로컬 MySQL 4). 신규 `CircularKeyAndDefaultIntegrationTests`: FK는 Oracle→PostgreSQL, PostgreSQL→Oracle, MySQL→MariaDB, MariaDB→MySQL, 기본값은 여기에 MariaDB→PostgreSQL, PostgreSQL→MySQL 통과. SQL Server·CUBRID·Tibero의 적재 후 FK와 기본값 확대는 실서버에서 따로 확인하지 않았다(SQL Server 식은 단위 테스트만). Playwright 전체 42개 중 38 통과, 4 건너뜀, 실패 0. 타입 검사·프로덕션 빌드 통과.
+
+## 20. 2026-11-27 실패 시 새로 만든 빈 테이블 삭제(선택 옵션)
+
+- **옵션**: `dropEmptyOnFailure`(기본 꺼짐). 즉시 실행·분할·일괄·재개·스케줄에 적용한다. `MigrationService.afterDroppingEmpty`가 **이번 실행에서 CREATE에 성공한** 테이블만, 행이 없을 때만 `DROP TABLE`(CASCADE·PURGE 없음)한다. 중지와 `LOAD_OUTCOME_UNKNOWN`은 제외. 삭제하면 `Progress.targetDropped`로 "이 작업이 만든 테이블" 기록을 지워, 재개 때 새로 만든다. 이 프로젝트에서 앱이 `DROP`을 실행하는 첫 경로이므로 조건을 넓힐 때는 주의할 것.
+- 일부러 좁힌 점: 이전 실행에서 만든 빈 테이블(예: 서버가 꺼진 뒤 재개)은 이름만으로 같은 테이블임을 보장할 수 없어 삭제하지 않는다.
+- **문서 정정**: PostgreSQL 대상도 DDL이 적재와 다른 연결에서 커밋되어 빈 테이블이 남는다(Oracle→PostgreSQL 통합 테스트로 확인). README와 파일→DB 적재의 생성 경고, 코드 주석의 "PostgreSQL은 롤백" 설명을 고쳤다. `TEST_RESULTS.md`와 §4의 과거 기록에 있는 같은 설명은 고치지 않았다.
+- 검증: 백엔드 전체(6종 DB 실서버 설정) 211개 중 실패 0, 건너뜀 6(성능 측정 1, Tibero 1, 로컬 MySQL 4). 신규 `DropEmptyTableIntegrationTests`는 Oracle→PostgreSQL, PostgreSQL→Oracle, MySQL→MariaDB, MariaDB→MySQL 통과(옵션 끔, 분할 실패, 일부 적재, 중지, 기존 테이블, 즉시 실행, 일괄 재개). SQL Server·CUBRID·Tibero의 삭제는 실서버에서 확인하지 않았다. Playwright 전체 42개 중 38 통과, 4 건너뜀, 실패 0(옵션이 요청에 실리는지 확인 추가, 삭제 동작 자체는 백엔드 테스트로 검증).
+- 백엔드 전체 실서버 테스트가 약 10분 걸린다. 10분 제한이 있는 도구에서는 백그라운드로 실행할 것.

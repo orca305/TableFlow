@@ -40,14 +40,18 @@ public class BatchMigration {
     }
     public interface BatchProgress extends MigrationService.Progress { void items(List<Item> items); }
     /** ifExists: 대상에 같은 이름 테이블이 있을 때 skip(건너뜀, 기본) 또는 append(추가 적재). */
-    public record Options(boolean preserveKeys, boolean copyIndexes, boolean copyDefaults, boolean copyForeignKeys, String ifExists, Integer chunkSize, List<TableOption> tableOptions) {
+    public record Options(boolean preserveKeys, boolean copyIndexes, boolean copyDefaults, boolean copyForeignKeys, String ifExists, Integer chunkSize, List<TableOption> tableOptions,
+                          boolean dropEmptyOnFailure) {
+        public Options(boolean preserveKeys, boolean copyIndexes, boolean copyDefaults, boolean copyForeignKeys, String ifExists, Integer chunkSize, List<TableOption> tableOptions) {
+            this(preserveKeys, copyIndexes, copyDefaults, copyForeignKeys, ifExists, chunkSize, tableOptions, false);
+        }
         public Options(boolean preserveKeys, boolean copyIndexes, boolean copyDefaults, boolean copyForeignKeys, String ifExists, Integer chunkSize) {
             this(preserveKeys, copyIndexes, copyDefaults, copyForeignKeys, ifExists, chunkSize, null);
         }
         boolean append() { return "append".equals(ifExists); }
         TableOption option(String table) { return tableOptions == null ? null : tableOptions.stream().filter(t -> t.table().equals(table)).findFirst().orElse(null); }
         String where(String table) { TableOption t = option(table); return t == null ? null : RowFilter.clean(t.where()); }
-        MigrationService.Extras extras(String table) { return new MigrationService.Extras(copyIndexes, copyDefaults, copyForeignKeys, where(table)); }
+        MigrationService.Extras extras(String table) { return new MigrationService.Extras(copyIndexes, copyDefaults, copyForeignKeys, where(table), dropEmptyOnFailure); }
     }
     /** status: match / mismatch / missing(대상 테이블 없음) / error. mismatches에는 값이 다른 측정만 담는다. */
     public record VerifyItem(String table, String target, String status, long sourceRows, long targetRows, int checked,
@@ -147,7 +151,7 @@ public class BatchMigration {
             boolean custom = option != null && option.mappings() != null;
             if (!p.excluded().isEmpty()) messages.add((custom ? "컬럼 매핑에서 제외: " : "이관할 수 없는 타입이라 제외: ") + String.join(", ", p.excluded()));
             if (where != null) messages.add("행 조건 적용: " + where);
-            if (cycles.contains(table)) messages.add("서로 참조하는 테이블이라 FK를 복제하지 못할 수 있습니다. 이관 후 DB에서 FK를 추가하세요.");
+            if (cycles.contains(table)) messages.add(o.copyForeignKeys() ? "서로 참조하는 테이블입니다. 모든 테이블을 적재한 뒤 빠진 외래 키를 추가합니다." : "서로 참조하는 테이블입니다. 외래 키가 필요하면 'FK 복제'를 선택하세요.");
             if (action.equals("skip")) { messages.add("대상에 같은 이름의 테이블이 있어 건너뜁니다."); try { rows = reader.count(source, sourceSchema, table, where); } catch (RuntimeException ignored) { /* 건수는 참고용 */ } }
             else try {
                 var a = migration.analyze(source, sourceSchema, table, target, targetSchema, p.target(), p.mappings(), true, o.preserveKeys(), o.extras(table));
@@ -164,7 +168,8 @@ public class BatchMigration {
         notes.add("부모 테이블(외래 키로 참조되는 테이블)부터 차례로 이관합니다." + (o.copyForeignKeys() ? " 선택한 범위 안의 부모가 먼저 만들어지므로 FK를 복제합니다." : ""));
         if (o.copyForeignKeys() && tables.stream().anyMatch(t -> o.where(t) != null))
             notes.add("행 조건을 적용한 테이블이 있습니다. 자식 행이 참조하는 부모 행이 조건에서 빠지면 외래 키 위반으로 해당 테이블에서 실패합니다.");
-        if (!cycles.isEmpty()) notes.add("서로 참조하는 테이블: " + String.join(", ", cycles) + " — 맨 뒤에 이관하며 이 테이블들의 FK는 복제되지 않을 수 있습니다.");
+        if (!cycles.isEmpty()) notes.add("서로 참조하는 테이블: " + String.join(", ", cycles) + " — 맨 뒤에 이관합니다."
+            + (o.copyForeignKeys() ? " 새로 만든 테이블의 외래 키는 모두 적재한 뒤 추가하며, DB가 거부한 것은 안내합니다." : ""));
         return new Plan(items, cycles, notes, total, blocked);
     }
 
@@ -210,8 +215,9 @@ public class BatchMigration {
         Map<String, Item> before = new HashMap<>(); for (Item i : prior == null ? List.<Item>of() : prior) before.put(i.table(), i);
         List<Prepared> prepared = new ArrayList<>(); Map<String, Long> counts = new HashMap<>();
         // 적재(DDL) 전 준비 조회만 연결을 재사용한다.
+        List<String> cycles = new ArrayList<>();
         explorer.reusing(() -> {
-            List<String> order = ordered(source, sourceSchema, tables, new ArrayList<>());
+            List<String> order = ordered(source, sourceSchema, tables, cycles);
             Map<String, String> existing = targetTables(target, targetSchema);
             Set<String> used = new HashSet<>();
             for (String table : order) {
@@ -255,6 +261,10 @@ public class BatchMigration {
                     Item now = items.get(index); items.set(index, new Item(now.table(), now.target(), now.state(), now.totalRows(), now.doneRows(), now.message(), true));
                     progress.items(items);
                 }
+                @Override public void targetDropped(String key) {
+                    Item now = items.get(index); items.set(index, new Item(now.table(), now.target(), now.state(), now.totalRows(), now.doneRows(), now.message(), false));
+                    progress.items(items);
+                }
             };
             try {
                 String id = UUID.nameUUIDFromBytes((batchId + ":" + p.table()).getBytes(StandardCharsets.UTF_8)).toString();
@@ -269,6 +279,18 @@ public class BatchMigration {
                 throw new LoadFailure(e instanceof LoadFailure f ? f.status : 422, d[0], "테이블 " + p.table() + "에서 실패했습니다. " + d[1] + " 앞선 " + done
                     + "개 테이블은 완료되었습니다. 원인을 해결한 뒤 재개하면 완료된 테이블은 건너뛰고 이 테이블부터 이어서 진행합니다.");
             }
+        }
+        // 서로 참조하는 테이블: 모두 적재한 뒤, 이 작업이 만든 테이블에 빠진 외래 키를 추가한다(다시 실행해도 있는 것은 건너뛴다).
+        if (o.copyForeignKeys()) for (int i = 0; i < prepared.size(); i++) {
+            Prepared p = prepared.get(i); Item item = items.get(i);
+            if (!cycles.contains(p.table()) || !item.created() || !item.state().equals("succeeded")) continue;
+            if (progress.cancelled()) throw new LoadFailure(409, "MIGRATION_CANCELLED", "취소했습니다. 데이터는 모두 적재되었으며, 같은 요청으로 재개하면 남은 외래 키를 추가합니다.");
+            List<String> added = migration.addForeignKeysAfterLoad(source, sourceSchema, p.table(), target, targetSchema, p.target(), p.mappings(), false);
+            if (added.isEmpty() || (item.message() != null && item.message().contains(String.join(" ", added)))) continue;
+            String message = String.join(" ", added);
+            items.set(i, new Item(item.table(), item.target(), item.state(), item.totalRows(), item.doneRows(), item.message() == null ? message : item.message() + " " + message, true));
+            progress.items(items);
+            for (String note : added) notes.add(p.target() + ": " + note);
         }
         notes.add("테이블 " + (done - skipped) + "개를 이관했습니다" + (skipped > 0 ? "(건너뜀 " + skipped + "개)" : "") + ".");
         return new MigrationService.Outcome(batchId, targetSchema, inserted, false, notes, items.size(), 0);
