@@ -2,9 +2,13 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { execSync } from "node:child_process";
 
 // 일회용 테스트 컨테이너(infra/jdbc/compose.yml)용 실행기. 운영·개인 DB에는 절대 사용하지 마세요.
-export const oracle = (sql: string) => execSync("docker exec -i tableflow-jdbc-tests-oracle-1 sqlplus -s tableflow/TableFlowTest2026@//localhost/FREEPDB1", { input: sql + "\nexit\n" }).toString();
-export const pg = (sql: string) => execSync("docker exec -i tableflow-jdbc-tests-postgresql-1 psql -U tableflow -d tableflow -t -A", { input: sql }).toString();
-export const mysql = (sql: string) => execSync("docker exec -i tableflow-jdbc-tests-mysql-1 mysql -utableflow -pTableFlowTest2026 tableflow -N", { input: sql }).toString();
+// compose 프로젝트 이름을 바꿔 띄운 컨테이너(새 환경 재현 등)는 TABLEFLOW_TEST_COMPOSE_PROJECT로 지정한다.
+const project = process.env.TABLEFLOW_TEST_COMPOSE_PROJECT ?? "tableflow-jdbc-tests";
+if (!/^[a-z0-9][a-z0-9_-]*$/.test(project)) throw new Error("TABLEFLOW_TEST_COMPOSE_PROJECT 값이 올바르지 않습니다.");
+const run = (service: string, command: string, input: string) => execSync(`docker exec -i ${project}-${service}-1 ${command}`, { input }).toString();
+export const oracle = (sql: string) => run("oracle", "sqlplus -s tableflow/TableFlowTest2026@//localhost/FREEPDB1", sql + "\nexit\n");
+export const pg = (sql: string) => run("postgresql", "psql -U tableflow -d tableflow -t -A", sql);
+export const mysql = (sql: string) => run("mysql", "mysql -utableflow -pTableFlowTest2026 tableflow -N", sql);
 
 export type Conn = { dbms: "oracle" | "postgresql" | "mysql" | "mariadb"; port: string; db: string };
 export const ORACLE: Conn = { dbms: "oracle", port: "11521", db: "FREEPDB1" };
