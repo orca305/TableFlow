@@ -1,6 +1,6 @@
 # EAI 1단계 상세 설계: 상태 DB
 
-작성: 2026-11-27. 상태: **1-a 구현**, 1-b 이후 구현 전. 상위 문서: [EAI 설계 기준](EAI_ARCHITECTURE.md) §10·§13.
+작성: 2026-11-27. 상태: **1-a·1-b 구현**, 1-c 이후 구현 전. 상위 문서: [EAI 설계 기준](EAI_ARCHITECTURE.md) §10·§13.
 
 ## 1. 목적과 범위
 
@@ -55,7 +55,7 @@
 | `jdbc_driver` | id uuid, dbms, version, sha256, size_bytes, jar bytea, registered_at | UNIQUE (dbms, version), UNIQUE (dbms, sha256) |
 | `schedule` | id uuid, name, kind, request jsonb, mode, interval_minutes, daily_at, refresh, enabled, created_at, next_run_at, last_run_at, last_state, last_message, last_job_id, source_label, target_label, version | PK id, 색인 (enabled, next_run_at) |
 | `migration_job` | id varchar(64), state, status jsonb, definition jsonb(null 가능), source_label, target_label, created_target, owner_id, heartbeat_at, created_at, updated_at | PK id, 색인 (state), (updated_at) |
-| `job_history` | id uuid, kind, request_id, started_at, duration_ms, status, source, target, row_count, error_code, message | PK id, 색인 (started_at desc) |
+| `job_history` | id uuid, seq(기록 순번), kind, request_id, started_at, duration_ms, status, source, target, row_count, error_code, message | PK id, UNIQUE seq. 최신순과 정리는 지금처럼 **기록한 순서**(seq) 기준 |
 | `app_meta` | key, value, updated_at | PK key (가져오기 완료 표시 등) |
 
 - `request`·`definition`에는 지금처럼 **비밀번호를 넣지 않는다.** 저장 직전에 비어 있는지 검사하고 시험으로 고정한다.
@@ -139,7 +139,7 @@
 | 순서 | 작업 | 완료 기준 |
 |---|---|---|
 | 1-a ✔ | 의존성, 설정, Flyway V1(`app_meta`), 상태 확인, 개발·CI 컨테이너. 표는 단계마다 새 버전으로 추가 | 빈 DB에서 시작, 설정이 없으면 명확히 실패 |
-| 1-b | 작업 이력 | 이력 화면 동작 유지 |
+| 1-b ✔ | 작업 이력(Flyway V2) | 이력 화면 동작 유지 |
 | 1-c | 저장 연결·드라이버 | 기존 연결·드라이버 시험 통과 |
 | 1-d | 이관 작업·실행권 | 재개·재시작·경쟁 시험 |
 | 1-e | 스케줄 | 중복 실행 방지 시험 |

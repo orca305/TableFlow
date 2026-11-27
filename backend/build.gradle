@@ -38,5 +38,4 @@ tasks.named('test') {
     def stateDb = [TABLEFLOW_STATE_DB_URL: 'jdbc:postgresql://127.0.0.1:15443/tableflow', TABLEFLOW_STATE_DB_USER: 'tableflow', TABLEFLOW_STATE_DB_PASSWORD: 'TableFlowTest2026']
     stateDb.each { name, fallback -> environment name, System.getenv(name) ?: fallback }
     inputs.property('TABLEFLOW_STATE_DB_URL', System.getenv('TABLEFLOW_STATE_DB_URL') ?: '')
-    systemProperty 'tableflow.history.file', "${buildDir}/tmp/test-history.jsonl" // 테스트가 data/ 이력을 오염시키지 않도록
 }

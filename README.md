@@ -185,7 +185,7 @@ $env:TABLEFLOW_TEST_JDBC='true'; $env:TABLEFLOW_TEST_JDBC_DBMS='oracle,postgresq
 - 백엔드: `PORT`(8080), `TABLEFLOW_FRONTEND_ORIGIN`(`http://localhost:3100`), `TABLEFLOW_OCR_URL`(`http://127.0.0.1:8000`), `TABLEFLOW_JDBC_ENABLED`, `TABLEFLOW_JDBC_LOAD_ENABLED`, `TABLEFLOW_SECRET_KEY`(저장 연결 암호화 키. 없으면 `data/connections.key`를 자동 생성). 괄호는 기본값입니다
 - OCR: `TABLEFLOW_OCR_PROVIDER`(mock), `TABLEFLOW_OCR_LANGUAGE`(korean), `TABLEFLOW_OCR_TIMEOUT_SECONDS`
 - 파일 최대 10MB, 10,000 데이터 행, 100열. PDF 최대 20페이지, OCR 이미지 최대 2,000만 픽셀. JSON 요청 최대 32MB, IP당 POST 120회/분(`TABLEFLOW_POSTS_PER_MINUTE`로 변경), 동시 처리 4건
-- 파일 변환 중인 표는 서버에 영구 저장하지 않으며 새로고침하면 화면 작업이 사라집니다. 서버에는 작업 이력(`data/job-history.jsonl`), 작업 목록(`data/jobs.json`), 스케줄(`data/schedules.json`), 저장 연결이 남고 모두 Git에서 제외됩니다
+- 파일 변환 중인 표는 서버에 영구 저장하지 않으며 새로고침하면 화면 작업이 사라집니다. 서버에는 작업 이력(상태 DB), 작업 목록(`data/jobs.json`), 스케줄(`data/schedules.json`), 저장 연결이 남고 모두 Git에서 제외됩니다
 - 대상 DB에 적재된 행과 영수증은 롤백하지 않는 한 그대로 남습니다
 
 ## 문서

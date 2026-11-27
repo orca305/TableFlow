@@ -30,6 +30,11 @@ public class ApiErrors {
         body.put("code", e.code); body.put("message", e.getMessage()); body.put("hint", e.hint); body.put("row", e.row);
         return ResponseEntity.badRequest().body(body);
     }
+    /** 상태 DB에 연결할 수 없거나 응답이 없을 때. 접속 정보는 돌려주지 않는다. */
+    @ExceptionHandler({org.springframework.dao.DataAccessResourceFailureException.class, org.springframework.dao.TransientDataAccessException.class})
+    ResponseEntity<?> stateDb(Exception e) {
+        return error(503, "STATE_DB_UNAVAILABLE", "상태 DB를 사용할 수 없습니다. PostgreSQL 실행 상태를 확인한 뒤 다시 시도해주세요.");
+    }
     @ExceptionHandler(IllegalArgumentException.class) ResponseEntity<?> bad(IllegalArgumentException e) {
         return error(400, "INVALID_INPUT", e.getMessage());
     }

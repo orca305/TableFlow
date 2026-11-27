@@ -56,6 +56,7 @@ OCR source에는 `page`(PDF 페이지, 이미지 null), `provider`(mock/local/ex
 | 409 | 같은 적재 요청 ID에 다른 내용 |
 | 413 | 파일 또는 JSON 요청 크기 초과 |
 | 422 | 출력 전 검증 실패 (`issues` 포함) |
+| 503 `STATE_DB_UNAVAILABLE` | 상태 DB에 접속할 수 없음(작업 이력 조회 등). 접속 정보는 돌려주지 않음 |
 | 429 | 요청 횟수(IP당 POST, 기본 120회/분, `TABLEFLOW_POSTS_PER_MINUTE`) 또는 동시 처리(4건) 제한 (`Retry-After: 60`, 허용 출처에는 CORS 헤더 포함) |
 | 500 | 예상하지 못한 처리 실패 |
 | 502 | OCR 응답 형식·계약 오류 |
