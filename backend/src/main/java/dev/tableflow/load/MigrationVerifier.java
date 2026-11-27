@@ -114,7 +114,7 @@ public class MigrationVerifier {
         }
         List<String> names = MigrationService.readColumns(mappings);
         List<Tally> tallies = new ArrayList<>(); for (int i = 0; i < changed.size(); i++) tallies.add(new Tally());
-        boolean keyset = rows > PAGE && reader.hasPrimaryKey(source, sourceSchema, sourceTable);
+        boolean keyset = rows > PAGE && reader.hasPageKey(source, sourceSchema, sourceTable);
         JdbcReader.Keyset cursor = new JdbcReader.Keyset(null);
         for (long offset = 0; offset < rows; offset += PAGE) {
             int size = (int) Math.min(PAGE, rows - offset);
@@ -206,6 +206,7 @@ public class MigrationVerifier {
         String filter = dev.tableflow.connection.RowFilter.clean(where);
         String sql = "SELECT " + String.join(", ", select) + " FROM " + JdbcReader.quote(c.dbms(), schema) + "." + JdbcReader.quote(c.dbms(), table) + (filter == null ? "" : " WHERE " + filter);
         return explorer.withConnection(c, true, connection -> {
+            JdbcExplorer.allowSlow(connection, 300);
             try (var st = connection.createStatement()) {
                 st.setQueryTimeout(300);
                 try (var rs = st.executeQuery(sql)) {

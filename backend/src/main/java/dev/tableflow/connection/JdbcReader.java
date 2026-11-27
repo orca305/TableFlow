@@ -18,6 +18,7 @@ public class JdbcReader {
     public static final int MAX_ROWS = 10_000; // Table 모델의 행 상한과 동일
     private static final int FETCH_SIZE = 500;
     private static final int QUERY_TIMEOUT_SECONDS = 30;
+    private static final int PAGE_TIMEOUT_SECONDS = 120; // 정렬된 분할 읽기는 큰 테이블에서 오래 걸릴 수 있다
     private final JdbcExplorer explorer;
     public JdbcReader(JdbcExplorer explorer) { this.explorer = explorer; }
 
@@ -60,7 +61,10 @@ public class JdbcReader {
     }
     public Table readPage(Credentials credentials, String schema, String table, List<String> columns, long offset, int size, String where) {
         if (offset < 0) throw new IllegalArgumentException("offset은 0 이상이어야 합니다.");
-        return explorer.withConnection(credentials, true, connection -> extract(connection, credentials.dbms(), schema, table, columns, size, offset, null, where));
+        return explorer.withConnection(credentials, true, connection -> {
+            JdbcExplorer.allowSlow(connection, PAGE_TIMEOUT_SECONDS);
+            return extract(connection, credentials.dbms(), schema, table, columns, size, offset, null, where);
+        });
     }
 
     /** 키 기반(keyset) 페이지 커서. after=이전 페이지 마지막 행의 기본 키 값(null이면 처음부터), last=이번 페이지 마지막 행의 기본 키 값. */
@@ -69,18 +73,22 @@ public class JdbcReader {
         public Keyset(List<Object> after) { this.after = after; this.last = after; }
         public List<Object> last() { return last; }
     }
-    public boolean hasPrimaryKey(Credentials credentials, String schema, String table) {
-        return explorer.withConnection(credentials, true, connection -> !primaryKey(connection, credentials.dbms(), schema, table).isEmpty());
+    /** 키 기반 페이지를 쓸 수 있는지: 기본 키, 없으면 모든 컬럼이 NOT NULL인 고유 인덱스. */
+    public boolean hasPageKey(Credentials credentials, String schema, String table) {
+        return explorer.withConnection(credentials, true, connection -> !pageKey(connection, credentials.dbms(), schema, table).isEmpty());
     }
     /**
-     * 기본 키 기준 정렬 페이지를 OFFSET 없이 읽는다(WHERE 키 &gt; 이전 마지막 키). 청크 위치와 무관하게 비용이 일정하다.
-     * 기본 키가 없으면 IllegalArgumentException. 읽은 뒤 keyset.last()가 다음 호출의 커서가 된다.
+     * 키(기본 키 또는 NOT NULL 고유 인덱스) 순서의 페이지를 OFFSET 없이 읽는다(WHERE 키 &gt; 이전 마지막 키). 청크 위치와 무관하게 비용이 일정하다.
+     * 쓸 수 있는 키가 없으면 IllegalArgumentException. 읽은 뒤 keyset.last()가 다음 호출의 커서가 된다.
      */
     public Table readKeyPage(Credentials credentials, String schema, String table, List<String> columns, Keyset keyset, int size) {
         return readKeyPage(credentials, schema, table, columns, keyset, size, null);
     }
     public Table readKeyPage(Credentials credentials, String schema, String table, List<String> columns, Keyset keyset, int size, String where) {
-        return explorer.withConnection(credentials, true, connection -> extract(connection, credentials.dbms(), schema, table, columns, size, -1, keyset, where));
+        return explorer.withConnection(credentials, true, connection -> {
+            JdbcExplorer.allowSlow(connection, PAGE_TIMEOUT_SECONDS);
+            return extract(connection, credentials.dbms(), schema, table, columns, size, -1, keyset, where);
+        });
     }
     private List<String> primaryKey(Connection connection, Dbms dbms, String schema, String table) throws SQLException {
         boolean catalogBased = SqlDialect.catalogBased(dbms);
@@ -89,6 +97,41 @@ public class JdbcReader {
             while (rows.next()) keys.put(rows.getInt("KEY_SEQ"), rows.getString("COLUMN_NAME"));
         }
         return new ArrayList<>(keys.values());
+    }
+
+    /**
+     * 페이지를 나눌 키: 기본 키, 없으면 컬럼 수가 가장 적은 고유 인덱스. 조건부(부분) 인덱스, 식 인덱스, NULL을 허용하는 컬럼,
+     * 부동소수점·지원하지 않는 타입이 낀 인덱스는 행을 빠짐없이 한 번씩 읽는다고 보장할 수 없어 쓰지 않는다. 없으면 빈 목록.
+     */
+    private List<String> pageKey(Connection connection, Dbms dbms, String schema, String table) throws SQLException {
+        List<String> primary = primaryKey(connection, dbms, schema, table);
+        if (!primary.isEmpty() || dbms == Dbms.cubrid || dbms == Dbms.tibero) return primary; // 실서버로 확인하지 않은 DB는 기본 키만
+        boolean catalogBased = SqlDialect.catalogBased(dbms);
+        String catalog = catalogBased ? schema : null, namespace = catalogBased ? null : schema;
+        var meta = connection.getMetaData();
+        Set<String> usable = new HashSet<>();
+        try (var rows = meta.getColumns(catalog, namespace == null ? null : JdbcExplorer.literalPattern(meta, namespace),
+                JdbcExplorer.literalPattern(meta, SqlDialect.metadataTable(dbms, schema, table)), "%")) {
+            while (rows.next()) {
+                int type = rows.getInt("DATA_TYPE");
+                if (rows.getInt("NULLABLE") == DatabaseMetaData.columnNoNulls && !unsupported(type) && type != Types.FLOAT && type != Types.REAL && type != Types.DOUBLE)
+                    usable.add(rows.getString("COLUMN_NAME"));
+            }
+        }
+        Map<String, TreeMap<Integer, String>> indexes = new TreeMap<>(); Set<String> rejected = new HashSet<>();
+        try (var rows = meta.getIndexInfo(catalog, namespace, SqlDialect.metadataTable(dbms, schema, table), true, true)) {
+            while (rows != null && rows.next()) {
+                String name = rows.getString("INDEX_NAME");
+                if (name == null || rows.getShort("TYPE") == DatabaseMetaData.tableIndexStatistic) continue;
+                boolean unique = !rows.getBoolean("NON_UNIQUE"); String column = rows.getString("COLUMN_NAME"); int position = rows.getInt("ORDINAL_POSITION");
+                String condition = rows.getString("FILTER_CONDITION");
+                if (!unique || column == null || !usable.contains(column) || (condition != null && !condition.isBlank())) rejected.add(name);
+                else indexes.computeIfAbsent(name, k -> new TreeMap<>()).put(position, column);
+            }
+        } catch (SQLException e) { return List.of(); } // 인덱스를 읽을 수 없으면 OFFSET 방식
+        return indexes.entrySet().stream().filter(e -> !rejected.contains(e.getKey()))
+            .min(Comparator.comparingInt((Map.Entry<String, TreeMap<Integer, String>> e) -> e.getValue().size()).thenComparing(Map.Entry::getKey))
+            .<List<String>>map(e -> new ArrayList<>(e.getValue().values())).orElse(List.of());
     }
 
     /** 연결을 직접 받는 핵심 로직. 테스트에서 임의 JDBC 연결로 검증할 수 있도록 분리했다. */
@@ -142,10 +185,10 @@ public class JdbcReader {
         }
 
         // 3) 읽기 전용 SELECT (값은 바인딩할 것이 없고, 식별자는 메타데이터로 검증된 이름만 인용)
-        List<String> keyColumns = keyset == null ? List.of() : primaryKey(connection, dbms, schema, table);
-        if (keyset != null && keyColumns.isEmpty()) throw new IllegalArgumentException("기본 키가 없는 테이블은 키 기반 페이지를 쓸 수 없습니다.");
+        List<String> keyColumns = keyset == null ? List.of() : pageKey(connection, dbms, schema, table);
+        if (keyset != null && keyColumns.isEmpty()) throw new IllegalArgumentException("기본 키나 NOT NULL 고유 인덱스가 없는 테이블은 키 기반 페이지를 쓸 수 없습니다.");
         if (keyset != null && keyset.after != null && keyset.after.size() != keyColumns.size())
-            throw new IllegalArgumentException("커서의 키 컬럼 수가 기본 키와 다릅니다.");
+            throw new IllegalArgumentException("커서의 키 컬럼 수가 테이블의 키와 다릅니다. 실행 중 인덱스가 바뀌었는지 확인해주세요.");
         // 키 값은 맨 뒤에 별칭(TF_KEY_n)을 붙여 덧붙여 읽는다. 선택 컬럼과 겹쳐도 열 이름이 중복되지 않는다(Oracle ORA-00960).
         List<String> selectList = new ArrayList<>(names.stream().map(n -> quote(dbms, n)).toList());
         for (int i = 0; i < keyColumns.size(); i++) selectList.add(quote(dbms, keyColumns.get(i)) + " AS " + quote(dbms, "TF_KEY_" + (i + 1)));
@@ -183,7 +226,7 @@ public class JdbcReader {
             for (int i = 0; i < binds.size(); i++) statement.setObject(i + 1, binds.get(i));
             statement.setFetchSize(FETCH_SIZE);
             statement.setMaxRows(limit);
-            statement.setQueryTimeout(QUERY_TIMEOUT_SECONDS);
+            statement.setQueryTimeout(keyset != null || offset >= 0 ? PAGE_TIMEOUT_SECONDS : QUERY_TIMEOUT_SECONDS);
             try (ResultSet rs = runQuery(statement, filter)) {
                 while (rs.next() && rows.size() < limit) {
                     Map<String, Cell> cells = new LinkedHashMap<>();

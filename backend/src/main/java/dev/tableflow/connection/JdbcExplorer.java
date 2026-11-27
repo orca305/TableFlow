@@ -325,6 +325,14 @@ public class JdbcExplorer {
         if (hit == null) { hit = load.get(); current.metadata.put(id, hit); }
         return hit;
     }
+    /**
+     * 접속 기본 읽기 제한(10초)보다 오래 걸릴 수 있는 큰 테이블 조회·DDL을 허용한다. 문장 제한(setQueryTimeout)이 먼저 걸리도록
+     * 여유를 두며, 지원하지 않는 드라이버는 기본값을 그대로 쓴다.
+     */
+    public static void allowSlow(Connection connection, int seconds) {
+        try { connection.setNetworkTimeout(Runnable::run, (seconds + 5) * 1000); }
+        catch (SQLException | AbstractMethodError | UnsupportedOperationException ignored) { /* 기본 읽기 제한 유지 */ }
+    }
     static Failure classify(SQLException error) {
         for (Throwable cause = error; cause != null; cause = cause.getCause()) {
             if (cause instanceof javax.net.ssl.SSLException) return new Failure(502, "JDBC_TLS", "TLS 인증서를 확인할 수 없습니다. 서버 인증서·호스트·신뢰 저장소를 확인해주세요.");

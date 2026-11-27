@@ -352,8 +352,8 @@ public class MigrationService {
             repaired = createdEarlier && !layout.createsTarget()
                 ? completeStructure(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, extras) : List.of();
             progress.total(chunks, total);
-            // 기본 키가 있으면 OFFSET 대신 키 기반(WHERE 키 > 이전 마지막 키)으로 읽어 뒤쪽 청크도 느려지지 않게 한다. 없으면 기존 OFFSET.
-            boolean keyset = reader.hasPrimaryKey(source, sourceSchema, sourceTable);
+            // 기본 키나 NOT NULL 고유 인덱스가 있으면 OFFSET 대신 키 기반(WHERE 키 > 이전 마지막 키)으로 읽어 뒤쪽 청크도 느려지지 않게 한다. 없으면 OFFSET.
+            boolean keyset = reader.hasPageKey(source, sourceSchema, sourceTable);
             JdbcReader.Keyset cursor = new JdbcReader.Keyset(null);
             for (int i = 0; i < chunks; i++) {
                 if (progress.cancelled())
@@ -491,6 +491,7 @@ public class MigrationService {
                                           List<Mapping> mappings, Extras extras) {
         List<Missing> missing = missingStructure(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, extras.indexes(), extras.foreignKeys(), false);
         if (!missing.isEmpty()) explorer.withConnection(target, false, connection -> {
+            JdbcExplorer.allowSlow(connection, 300);
             for (Missing m : missing) try (var st = connection.createStatement()) { st.setQueryTimeout(300); st.execute(m.ddl()); }
             if (!connection.getAutoCommit()) connection.commit();
             return null;
@@ -506,6 +507,7 @@ public class MigrationService {
         List<Missing> missing = missingStructure(source, sourceSchema, sourceTable, target, targetSchema, targetTable, mappings, false, true, selfReference);
         if (missing.isEmpty()) return List.of();
         return explorer.withConnection(target, false, connection -> {
+            JdbcExplorer.allowSlow(connection, 300);
             List<String> notes = new ArrayList<>();
             for (Missing m : missing) {
                 try (var st = connection.createStatement()) {
